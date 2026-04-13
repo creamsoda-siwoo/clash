@@ -886,6 +886,7 @@ async function startServer() {
       };
       
       maintainBots();
+      if (allUsers[socket.id]) allUsers[socket.id].status = 'PLAYING';
       io.emit('syncMatch', matchState);
     });
 
@@ -903,13 +904,24 @@ async function startServer() {
       if (!p || matchState.status !== 'PLAYING') return;
 
       const card = CARDS[data.cardId];
-      if (!card || p.mana < card.cost) return;
+      if (!card) return;
+      
+      if (p.mana < card.cost - 0.01) {
+        socket.emit('notification', { message: '엘릭서가 부족합니다!', color: '#ef4444' });
+        return;
+      }
 
       // Deployment restrictions
       const isRed = p.team === 'red';
       const mid = MAP_WIDTH / 2;
-      if (isRed && data.x > mid) return;
-      if (!isRed && data.x < mid) return;
+      if (isRed && data.x > mid) {
+        socket.emit('notification', { message: '적 진영에는 소환할 수 없습니다!', color: '#ef4444' });
+        return;
+      }
+      if (!isRed && data.x < mid) {
+        socket.emit('notification', { message: '적 진영에는 소환할 수 없습니다!', color: '#ef4444' });
+        return;
+      }
 
       p.mana -= card.cost;
       playCardLogic(p, card, data.x, data.y);

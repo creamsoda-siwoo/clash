@@ -191,6 +191,17 @@ export default function GameCanvas() {
   const mousePos = useRef({ x: 0, y: 0 });
   const unitsRef = useRef<Unit[]>([]);
   const floatingTextsRef = useRef<FloatingText[]>([]);
+  const stateRef = useRef({
+    playerName: '',
+    selectedDeck: [] as string[],
+    trophies: 0,
+    cardLevels: {} as Record<string, number>,
+    level: 1
+  });
+
+  useEffect(() => {
+    stateRef.current = { playerName, selectedDeck, trophies, cardLevels, level };
+  }, [playerName, selectedDeck, trophies, cardLevels, level]);
 
   const saveToServer = async (data: any) => {
     if (!auth.currentUser) return;
@@ -346,6 +357,7 @@ export default function GameCanvas() {
           setIsLoggedIn(true);
         } else {
           // New user initialization
+          const initialDeck = defaultCards.slice(0, 6);
           userData = {
             uid: user.uid,
             username: user.email?.split('@')[0] || '사령관',
@@ -355,7 +367,7 @@ export default function GameCanvas() {
             xp: 0,
             cardLevels: {},
             unlockedCards: defaultCards,
-            selectedDeck: [],
+            selectedDeck: initialDeck,
             fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
             missions: [
               { id: 'win1', desc: '전투에서 1회 승리하기', target: 1, current: 0, reward: 200, completed: false },
@@ -408,10 +420,10 @@ export default function GameCanvas() {
       setIncomingChallenge(null);
       newSocket.emit('joinGame', {
         team: data.team,
-        name: playerName,
-        deck: selectedDeck,
-        trophies,
-        cardLevels
+        name: stateRef.current.playerName,
+        deck: stateRef.current.selectedDeck,
+        trophies: stateRef.current.trophies,
+        cardLevels: stateRef.current.cardLevels
       });
       setShowLobby(false);
     });
@@ -448,8 +460,8 @@ export default function GameCanvas() {
           // Update XP and Level
           setXp(prevXp => {
             let newXp = prevXp + (data.result === 'win' ? 50 : 20);
-            let newLevel = level;
-            const xpToNext = level * 100;
+            let newLevel = stateRef.current.level;
+            const xpToNext = newLevel * 100;
             if (newXp >= xpToNext) {
               newXp -= xpToNext;
               newLevel += 1;
@@ -576,6 +588,14 @@ export default function GameCanvas() {
     const me = players[myId];
     if (!me) return;
 
+    const isRed = me.team === 'red';
+    const isValidSide = (isRed && logicalX <= mapInfo.width / 2) || (!isRed && logicalX >= mapInfo.width / 2);
+    
+    if (!isValidSide) {
+      setNotification({ message: '아군 진영에만 소환할 수 있습니다!', color: '#ef4444' });
+      return;
+    }
+
     socket.emit('playCard', { cardId: selectedCardId, x: logicalX, y: logicalY });
     setSelectedCardId(null);
   };
@@ -665,17 +685,22 @@ export default function GameCanvas() {
 
       const me = players[myId];
 
-      // Draw Placement Zone Highlight (Removed to allow full map deployment)
-      /*
+      // Draw Deployment Zone Highlight
       if (me && selectedCardId && matchState.status === 'PLAYING') {
-        ctx.fillStyle = me.team === 'red' ? 'rgba(239, 68, 68, 0.2)' : 'rgba(59, 130, 246, 0.2)';
-        if (me.team === 'red') {
+        const isRed = me.team === 'red';
+        ctx.fillStyle = isRed ? 'rgba(239, 68, 68, 0.15)' : 'rgba(59, 130, 246, 0.15)';
+        if (isRed) {
           ctx.fillRect(0, 0, mapInfo.width / 2, mapInfo.height);
         } else {
           ctx.fillRect(mapInfo.width / 2, 0, mapInfo.width / 2, mapInfo.height);
         }
+        
+        ctx.strokeStyle = isRed ? 'rgba(239, 68, 68, 0.5)' : 'rgba(59, 130, 246, 0.5)';
+        ctx.setLineDash([10, 10]);
+        ctx.lineWidth = 5;
+        ctx.strokeRect(isRed ? 10 : mapInfo.width / 2 + 10, 10, mapInfo.width / 2 - 20, mapInfo.height - 20);
+        ctx.setLineDash([]);
       }
-      */
 
       // Helper to draw freeze effect
       const drawFreeze = (x: number, y: number, r: number) => {
@@ -1134,7 +1159,10 @@ export default function GameCanvas() {
                     {level}
                   </div>
                   <div className="flex flex-col">
-                    <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-tight">{playerName}</h1>
+                    <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-tight flex items-center gap-2">
+                      {playerName}
+                      <span className="text-[10px] bg-blue-600 text-white px-2 py-0.5 rounded-md">YOU</span>
+                    </h1>
                     <div className="w-24 sm:w-32 h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700 mt-1">
                       <div
                         className="h-full bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.5)]"
@@ -1918,6 +1946,10 @@ export default function GameCanvas() {
               <div className="flex gap-3 w-full">
                 <button
                   onClick={() => {
+                    if (selectedDeck.length !== 6) {
+                      setNotification({ message: '전투 덱을 6장으로 채워야 합니다!', color: '#ef4444' });
+                      return;
+                    }
                     socket?.emit('acceptChallenge', incomingChallenge.id);
                   }}
                   className="flex-1 bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-xl font-black transition-all"
