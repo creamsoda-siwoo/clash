@@ -6,6 +6,14 @@ import path from "path";
 
 const PORT = 3000;
 
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 const MAP_WIDTH = 1600;
 const MAP_HEIGHT = 900;
 const TICK_RATE = 16; // 60fps
@@ -58,8 +66,11 @@ const CARDS: Record<string, CardDef> = {
   ice_golem: { id: 'ice_golem', name: '얼음 골렘', type: 'unit', cost: 2, hp: 1000, dmg: 20, speed: 2, range: 60, atkSpeed: 1500, color: '#bae6fd', rarity: 'rare' },
   poison: { id: 'poison', name: '독 마법', type: 'spell', cost: 4, dmg: 400, radius: 200, color: '#16a34a', duration: 8000, rarity: 'epic' },
   healer: { id: 'healer', name: '치유사', type: 'unit', cost: 4, hp: 800, dmg: 40, speed: 2.5, range: 300, atkSpeed: 1500, color: '#fef08a', rarity: 'rare' },
-  vampire: { id: 'vampire', name: '뱀파이어', type: 'unit', cost: 5, hp: 900, dmg: 180, speed: 3.5, range: 60, atkSpeed: 1000, color: '#9f1239', rarity: 'epic' },
-  mecha: { id: 'mecha', name: '메카', type: 'unit', cost: 6, hp: 2500, dmg: 200, speed: 2, range: 400, atkSpeed: 2000, color: '#64748b', isAoE: true, rarity: 'legendary' }
+  cannon: { id: 'cannon', name: '대포', type: 'unit', cost: 3, hp: 600, dmg: 120, speed: 0, range: 450, atkSpeed: 1200, color: '#475569', rarity: 'rare' },
+  electro_wizard: { id: 'electro_wizard', name: '일렉트로 마법사', type: 'unit', cost: 4, hp: 600, dmg: 80, speed: 3, range: 350, atkSpeed: 1500, color: '#60a5fa', targetCount: 2, rarity: 'legendary' },
+  log: { id: 'log', name: '통나무', type: 'spell', cost: 2, dmg: 100, radius: 100, color: '#78350f', rarity: 'legendary' },
+  sparky: { id: 'sparky', name: '스파키', type: 'unit', cost: 6, hp: 1200, dmg: 1100, speed: 1.5, range: 400, atkSpeed: 4000, color: '#facc15', isAoE: true, rarity: 'legendary' },
+  mini_pekka: { id: 'mini_pekka', name: '미니 페카', type: 'unit', cost: 4, hp: 1100, dmg: 600, speed: 4, range: 60, atkSpeed: 1600, color: '#312e81', rarity: 'rare' }
 };
 
 interface Player {
@@ -156,6 +167,7 @@ let matchState = {
 
 async function startServer() {
   const app = express();
+  app.use(express.json());
   const httpServer = createServer(app);
   const io = new Server(httpServer, { cors: { origin: "*" } });
 

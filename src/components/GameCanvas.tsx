@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu } from 'lucide-react';
+import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { auth, db } from '../lib/firebase';
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
 
 interface CardDef {
   id: string;
@@ -117,7 +120,6 @@ export default function GameCanvas() {
   const [matchState, setMatchState] = useState<MatchState>({ status: 'LOBBY', winner: '', timeLeft: 120 });
   
   const [showLobby, setShowLobby] = useState(true);
-  const [playerName, setPlayerName] = useState('사령관');
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   
   // New States for Deck & Trophies
@@ -131,26 +133,73 @@ export default function GameCanvas() {
   const [gachaResult, setGachaResult] = useState<{ cardId: string, isNew: boolean, isSynthesis?: boolean } | null>(null);
   const [fragments, setFragments] = useState<Record<string, number>>({ common: 0, rare: 0, epic: 0, legendary: 0 });
 
+  // Auth States
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [authMode, setAuthMode] = useState<'LOGIN' | 'REGISTER'>('LOGIN');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [isAppReady, setIsAppReady] = useState(false);
+  const [playerName, setPlayerName] = useState('');
+
   const mousePos = useRef({ x: 0, y: 0 });
   const unitsRef = useRef<Unit[]>([]);
   const floatingTextsRef = useRef<FloatingText[]>([]);
 
+  const saveToServer = async (data: any) => {
+    if (!auth.currentUser) return;
+    try {
+      await setDoc(doc(db, 'users', auth.currentUser.uid), {
+        ...data,
+        uid: auth.currentUser.uid,
+        updatedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (e) {
+      console.error('Firestore save error:', e);
+    }
+  };
+
   useEffect(() => {
-    const savedTrophies = localStorage.getItem('trophies');
-    if (savedTrophies) setTrophies(parseInt(savedTrophies, 10));
-
-    const savedGold = localStorage.getItem('gold');
-    if (savedGold) setGold(parseInt(savedGold, 10));
-    else setGold(500); // Initial gold
-
-    const savedLevels = localStorage.getItem('cardLevels');
-    if (savedLevels) setCardLevels(JSON.parse(savedLevels));
-
-    const savedUnlocked = localStorage.getItem('unlockedCards');
-    if (savedUnlocked) setUnlockedCards(JSON.parse(savedUnlocked));
-
-    const savedFragments = localStorage.getItem('fragments');
-    if (savedFragments) setFragments(JSON.parse(savedFragments));
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        // Fetch user data from Firestore
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+          const data = userDoc.data();
+          setPlayerName(data.username);
+          setTrophies(data.trophies || 0);
+          setGold(data.gold || 0);
+          setCardLevels(data.cardLevels || {});
+          setUnlockedCards(data.unlockedCards || []);
+          setFragments(data.fragments || { common: 0, rare: 0, epic: 0, legendary: 0 });
+          setIsLoggedIn(true);
+        } else {
+          // New user initialization
+          const defaultCards = ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'];
+          const initialData = {
+            uid: user.uid,
+            username: user.email?.split('@')[0] || '사령관',
+            trophies: 0,
+            gold: 500,
+            cardLevels: {},
+            unlockedCards: defaultCards,
+            fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
+            updatedAt: new Date().toISOString()
+          };
+          await setDoc(doc(db, 'users', user.uid), initialData);
+          setPlayerName(initialData.username);
+          setTrophies(initialData.trophies);
+          setGold(initialData.gold);
+          setCardLevels(initialData.cardLevels);
+          setUnlockedCards(initialData.unlockedCards);
+          setFragments(initialData.fragments);
+          setIsLoggedIn(true);
+        }
+      } else {
+        setIsLoggedIn(false);
+      }
+      setIsAppReady(true);
+    });
 
     const newSocket = io();
     setSocket(newSocket);
@@ -164,8 +213,9 @@ export default function GameCanvas() {
       
       setUnlockedCards(prev => {
         if (prev.length === 0) {
-          localStorage.setItem('unlockedCards', JSON.stringify(defaultCards));
-          return defaultCards;
+          const newU = defaultCards;
+          saveToServer({ trophies, gold, cardLevels, unlockedCards: newU, fragments });
+          return newU;
         }
         return prev;
       });
@@ -182,15 +232,14 @@ export default function GameCanvas() {
 
     newSocket.on('matchResult', (data: { result: string, trophyChange: number, goldChange: number }) => {
       setMatchResultInfo(data);
-      setTrophies(prev => {
-        const newTrophies = Math.max(0, prev + data.trophyChange);
-        localStorage.setItem('trophies', newTrophies.toString());
+      setTrophies(prevT => {
+        const newTrophies = Math.max(0, prevT + data.trophyChange);
+        setGold(prevG => {
+          const newGold = prevG + data.goldChange;
+          saveToServer({ trophies: newTrophies, gold: newGold, cardLevels, unlockedCards, fragments });
+          return newGold;
+        });
         return newTrophies;
-      });
-      setGold(prev => {
-        const newGold = prev + data.goldChange;
-        localStorage.setItem('gold', newGold.toString());
-        return newGold;
       });
     });
 
@@ -555,6 +604,62 @@ export default function GameCanvas() {
     }
   };
 
+  const handleAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (authMode === 'LOGIN') {
+        await signInWithEmailAndPassword(auth, username, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, username, password);
+      }
+    } catch (err: any) {
+      console.error('Auth error:', err);
+      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        setAuthError('아이디 또는 비밀번호가 올바르지 않습니다.');
+      } else if (err.code === 'auth/email-already-in-use') {
+        setAuthError('이미 사용 중인 아이디(이메일)입니다.');
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError('비밀번호는 6자리 이상이어야 합니다.');
+      } else if (err.code === 'auth/invalid-email') {
+        setAuthError('올바른 이메일 형식이 아닙니다.');
+      } else {
+        setAuthError('인증 오류가 발생했습니다.');
+      }
+    }
+  };
+
+  if (!isAppReady) {
+    return (
+      <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white">
+        <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+        <p className="text-slate-400 font-medium animate-pulse">시스템 초기화 중...</p>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return (
+      <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-center font-sans text-white">
+        <div className="bg-slate-900 p-8 rounded-3xl border border-slate-800 shadow-2xl w-full max-w-md">
+          <h1 className="text-4xl font-black text-center mb-8 tracking-tight text-blue-500">CLASH</h1>
+          <div className="flex mb-6">
+            <button onClick={() => setAuthMode('LOGIN')} className={`flex-1 py-3 font-bold transition-colors ${authMode === 'LOGIN' ? 'text-white border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}>로그인</button>
+            <button onClick={() => setAuthMode('REGISTER')} className={`flex-1 py-3 font-bold transition-colors ${authMode === 'REGISTER' ? 'text-white border-b-2 border-blue-500' : 'text-slate-500 hover:text-slate-300'}`}>회원가입</button>
+          </div>
+          <form onSubmit={handleAuth} className="flex flex-col gap-4">
+            <input type="email" placeholder="이메일 (아이디)" value={username} onChange={e => setUsername(e.target.value)} className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500" required />
+            <input type="password" placeholder="비밀번호" value={password} onChange={e => setPassword(e.target.value)} className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-blue-500" required />
+            {authError && <p className={`text-sm ${authError.includes('성공') ? 'text-green-400' : 'text-red-400'}`}>{authError}</p>}
+            <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 rounded-xl mt-2 transition-colors">
+              {authMode === 'LOGIN' ? '로그인' : '회원가입'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
       <canvas 
@@ -570,8 +675,11 @@ export default function GameCanvas() {
             
             {/* Header */}
             <div className="flex justify-between items-center p-6 border-b border-slate-800">
-              <h1 className="text-3xl font-black text-white tracking-tight">STELLAR STRIKE</h1>
-              <div className="flex gap-4">
+              <div className="flex items-center gap-4">
+                <h1 className="text-3xl font-black text-white tracking-tight">CLASH</h1>
+                <span className="text-slate-400 font-bold">[{playerName}]</span>
+              </div>
+              <div className="flex gap-4 items-center">
                 <div className="flex items-center gap-2 bg-yellow-500/20 px-4 py-2 rounded-full border border-yellow-500/50">
                   <span className="text-yellow-400 font-bold">💰 {gold}</span>
                 </div>
@@ -579,6 +687,12 @@ export default function GameCanvas() {
                   <Trophy className="text-blue-400" size={20} />
                   <span className="text-blue-400 font-bold">{trophies}</span>
                 </div>
+                <button 
+                  onClick={() => signOut(auth)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-xl font-bold transition-colors border border-slate-600"
+                >
+                  로그아웃
+                </button>
               </div>
             </div>
 
@@ -616,15 +730,6 @@ export default function GameCanvas() {
               {activeTab === 'BATTLE' && (
                 <div className="flex flex-col h-full justify-between max-w-xl mx-auto">
                   <div>
-                    <label className="block text-slate-400 font-bold mb-2 text-center">사령관 이름</label>
-                    <input 
-                      type="text" 
-                      value={playerName}
-                      onChange={(e) => setPlayerName(e.target.value)}
-                      className="w-full bg-slate-800 border border-slate-700 text-white px-4 py-3 rounded-xl focus:outline-none focus:border-blue-500 mb-8 text-center text-xl font-bold"
-                      maxLength={10}
-                    />
-
                     <div className="mb-8">
                       <h3 className="text-slate-400 font-bold mb-4 text-center">선택된 덱 ({selectedDeck.length}/6)</h3>
                       <div className="flex justify-center gap-3">
@@ -720,15 +825,12 @@ export default function GameCanvas() {
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       if (gold >= upgradeCost) {
+                                        const newL = { ...cardLevels, [card.id]: level + 1 };
+                                        setCardLevels(newL);
                                         setGold(g => {
                                           const newG = g - upgradeCost;
-                                          localStorage.setItem('gold', newG.toString());
+                                          saveToServer({ trophies, gold: newG, cardLevels: newL, unlockedCards, fragments });
                                           return newG;
-                                        });
-                                        setCardLevels(prev => {
-                                          const newL = { ...prev, [card.id]: level + 1 };
-                                          localStorage.setItem('cardLevels', JSON.stringify(newL));
-                                          return newL;
                                         });
                                       }
                                     }}
@@ -757,11 +859,8 @@ export default function GameCanvas() {
                     <button
                       onClick={() => {
                         if (gold >= 100) {
-                          setGold(g => {
-                            const newG = g - 100;
-                            localStorage.setItem('gold', newG.toString());
-                            return newG;
-                          });
+                          const newGold = gold - 100;
+                          setGold(newGold);
                           
                           // Gacha Logic
                           const rand = Math.random();
@@ -777,13 +876,13 @@ export default function GameCanvas() {
                           if (isNew) {
                             setUnlockedCards(prev => {
                               const newU = [...prev, drawn.id];
-                              localStorage.setItem('unlockedCards', JSON.stringify(newU));
+                              saveToServer({ trophies, gold: newGold, cardLevels, unlockedCards: newU, fragments });
                               return newU;
                             });
                           } else {
                             setFragments(prev => {
                               const newF = { ...prev, [drawn.rarity]: (prev[drawn.rarity] || 0) + 1 };
-                              localStorage.setItem('fragments', JSON.stringify(newF));
+                              saveToServer({ trophies, gold: newGold, cardLevels, unlockedCards, fragments: newF });
                               return newF;
                             });
                           }
@@ -829,15 +928,21 @@ export default function GameCanvas() {
                       <button
                         onClick={() => {
                           if ((fragments.common || 0) >= 3) {
-                            setFragments(prev => { const n = {...prev, common: prev.common - 3}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                            const newF = {...fragments, common: fragments.common - 3};
                             const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'rare');
                             const drawn = pool[Math.floor(Math.random() * pool.length)];
                             const isNew = !unlockedCards.includes(drawn.id);
                             if (isNew) {
-                              setUnlockedCards(prev => { const n = [...prev, drawn.id]; localStorage.setItem('unlockedCards', JSON.stringify(n)); return n; });
+                              setUnlockedCards(prev => { 
+                                const n = [...prev, drawn.id]; 
+                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, fragments: newF });
+                                return n; 
+                              });
                             } else {
-                              setFragments(prev => { const n = {...prev, rare: (prev.rare || 0) + 1}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                              newF.rare = (newF.rare || 0) + 1;
+                              saveToServer({ trophies, gold, cardLevels, unlockedCards, fragments: newF });
                             }
+                            setFragments(newF);
                             setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
                           }
                         }}
@@ -855,15 +960,21 @@ export default function GameCanvas() {
                       <button
                         onClick={() => {
                           if ((fragments.rare || 0) >= 3) {
-                            setFragments(prev => { const n = {...prev, rare: prev.rare - 3}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                            const newF = {...fragments, rare: fragments.rare - 3};
                             const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'epic');
                             const drawn = pool[Math.floor(Math.random() * pool.length)];
                             const isNew = !unlockedCards.includes(drawn.id);
                             if (isNew) {
-                              setUnlockedCards(prev => { const n = [...prev, drawn.id]; localStorage.setItem('unlockedCards', JSON.stringify(n)); return n; });
+                              setUnlockedCards(prev => { 
+                                const n = [...prev, drawn.id]; 
+                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, fragments: newF });
+                                return n; 
+                              });
                             } else {
-                              setFragments(prev => { const n = {...prev, epic: (prev.epic || 0) + 1}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                              newF.epic = (newF.epic || 0) + 1;
+                              saveToServer({ trophies, gold, cardLevels, unlockedCards, fragments: newF });
                             }
+                            setFragments(newF);
                             setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
                           }
                         }}
@@ -881,15 +992,21 @@ export default function GameCanvas() {
                       <button
                         onClick={() => {
                           if ((fragments.epic || 0) >= 3) {
-                            setFragments(prev => { const n = {...prev, epic: prev.epic - 3}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                            const newF = {...fragments, epic: fragments.epic - 3};
                             const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'legendary');
                             const drawn = pool[Math.floor(Math.random() * pool.length)];
                             const isNew = !unlockedCards.includes(drawn.id);
                             if (isNew) {
-                              setUnlockedCards(prev => { const n = [...prev, drawn.id]; localStorage.setItem('unlockedCards', JSON.stringify(n)); return n; });
+                              setUnlockedCards(prev => { 
+                                const n = [...prev, drawn.id]; 
+                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, fragments: newF });
+                                return n; 
+                              });
                             } else {
-                              setFragments(prev => { const n = {...prev, legendary: (prev.legendary || 0) + 1}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                              newF.legendary = (newF.legendary || 0) + 1;
+                              saveToServer({ trophies, gold, cardLevels, unlockedCards, fragments: newF });
                             }
+                            setFragments(newF);
                             setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
                           }
                         }}
@@ -907,15 +1024,21 @@ export default function GameCanvas() {
                       <button
                         onClick={() => {
                           if ((fragments.legendary || 0) >= 3) {
-                            setFragments(prev => { const n = {...prev, legendary: prev.legendary - 3}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                            const newF = {...fragments, legendary: fragments.legendary - 3};
                             const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'legendary');
                             const drawn = pool[Math.floor(Math.random() * pool.length)];
                             const isNew = !unlockedCards.includes(drawn.id);
                             if (isNew) {
-                              setUnlockedCards(prev => { const n = [...prev, drawn.id]; localStorage.setItem('unlockedCards', JSON.stringify(n)); return n; });
+                              setUnlockedCards(prev => { 
+                                const n = [...prev, drawn.id]; 
+                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, fragments: newF });
+                                return n; 
+                              });
                             } else {
-                              setFragments(prev => { const n = {...prev, legendary: (prev.legendary || 0) + 1}; localStorage.setItem('fragments', JSON.stringify(n)); return n; });
+                              newF.legendary = (newF.legendary || 0) + (newF.legendary || 0) + 1;
+                              saveToServer({ trophies, gold, cardLevels, unlockedCards, fragments: newF });
                             }
+                            setFragments(newF);
                             setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
                           }
                         }}

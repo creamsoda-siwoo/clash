@@ -1,0 +1,26 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Game user profile and progress",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "username": { "type": "string", "description": "Display name" },
+        "trophies": { "type": "number", "description": "Current trophy count" },
+        "gold": { "type": "number", "description": "Current gold amount" },
+        "cardLevels": { "type": "object", "description": "Map of card ID to level" },
+        "unlockedCards": { "type": "array", "description": "List of unlocked card IDs" },
+        "fragments": { "type": "object", "description": "Map of rarity to fragment count" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "username", "trophies", "gold"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile document"
+    }
+  }
+}

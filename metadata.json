@@ -1,5 +1,5 @@
 {
-  "name": "Arena Brawl RPG",
-  "description": "A real-time multiplayer action RPG where players fight each other in an arena, level up, and climb the leaderboard.",
+  "name": "Clash",
+  "description": "A real-time strategy card battle game where players deploy units and spells to destroy enemy towers.",
   "requestFramePermissions": []
 }
