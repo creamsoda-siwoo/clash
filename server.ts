@@ -3,7 +3,7 @@ import { createServer as createViteServer } from "vite";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import path from "path";
-import { CARDS, CardDef } from "./src/constants";
+import { CARDS, CardDef } from "./src/constants.ts";
 
 const PORT = 3000;
 

@@ -4,7 +4,7 @@ import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame,
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import { CARDS, CardDef } from '../constants';
 
 interface Player {
@@ -116,6 +116,8 @@ export default function GameCanvas() {
   const [notification, setNotification] = useState<{ message: string, color: string } | null>(null);
   const [onlineCount, setOnlineCount] = useState(0);
   const [onlineUsers, setOnlineUsers] = useState<any[]>([]);
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [isFetchingLeaderboard, setIsFetchingLeaderboard] = useState(false);
   const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [showEmoteMenu, setShowEmoteMenu] = useState(false);
@@ -184,6 +186,36 @@ export default function GameCanvas() {
     }
   };
 
+  // Sync profile with server whenever socket or user data changes
+  const fetchLeaderboard = async () => {
+    setIsFetchingLeaderboard(true);
+    try {
+      const q = query(collection(db, 'users'), orderBy('trophies', 'desc'), limit(20));
+      const querySnapshot = await getDocs(q);
+      const users: any[] = [];
+      querySnapshot.forEach((doc) => {
+        users.push({ id: doc.id, ...doc.data() });
+      });
+      setLeaderboard(users);
+    } catch (e) {
+      console.error('Error fetching leaderboard:', e);
+    }
+    setIsFetchingLeaderboard(false);
+  };
+
+  // Sync profile with server whenever socket or user data changes
+  useEffect(() => {
+    if (socket && isLoggedIn && playerName) {
+      socket.emit('updateProfile', { name: playerName, trophies: trophies });
+    }
+  }, [socket, isLoggedIn, playerName, trophies]);
+
+  useEffect(() => {
+    if (activeTab === 'USERS') {
+      fetchLeaderboard();
+    }
+  }, [activeTab]);
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
@@ -247,11 +279,6 @@ export default function GameCanvas() {
           setFragments(userData.fragments);
           setMissions(userData.missions);
           setIsLoggedIn(true);
-        }
-        
-        // Sync with socket for online list
-        if (socket) {
-          socket.emit('updateProfile', { name: userData.username, trophies: userData.trophies });
         }
       } else {
         setIsLoggedIn(false);
@@ -764,7 +791,6 @@ export default function GameCanvas() {
 
   const handleJoinGame = () => {
     if (!socket || selectedDeck.length !== 6) return;
-    setIsSearching(true);
     updateMission('win', 1);
     socket.emit('joinQueue', { 
       name: playerName, 
@@ -984,7 +1010,7 @@ export default function GameCanvas() {
                 { id: 'SHOP', label: '상점', color: 'border-yellow-500' },
                 { id: 'SYNTHESIS', label: '합성', color: 'border-purple-500' },
                 { id: 'PACHINKO', label: '빠칭코', color: 'border-green-500' },
-                { id: 'USERS', label: '유저', color: 'border-slate-500' }
+                { id: 'USERS', label: '랭킹 & 유저', color: 'border-slate-500' }
               ].map(tab => (
                 <button 
                   key={tab.id}
@@ -1525,34 +1551,80 @@ export default function GameCanvas() {
 
               {activeTab === 'USERS' && (
                 <div className="flex-1 overflow-y-auto p-4 sm:p-8">
-                  <h2 className="text-2xl font-black text-white mb-6">접속 중인 유저 ({onlineUsers.length})</h2>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {onlineUsers.map(user => (
-                      <div key={user.id} className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 flex justify-between items-center">
-                        <div className="flex flex-col">
-                          <span className="text-white font-bold">{user.name} {user.id === myId && '(나)'}</span>
-                          <div className="flex items-center gap-2 text-xs text-slate-400">
-                            <Trophy size={12} />
-                            <span>{user.trophies}</span>
-                            <span className={`ml-2 px-1.5 py-0.5 rounded-full text-[10px] ${user.status === 'PLAYING' ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'}`}>
-                              {user.status === 'PLAYING' ? '전투 중' : '대기 중'}
-                            </span>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Online Users */}
+                    <div>
+                      <h2 className="text-2xl font-black text-white mb-6 flex items-center gap-2">
+                        <Users className="text-green-400" size={24} />
+                        접속 중인 유저 ({onlineUsers.length})
+                      </h2>
+                      <div className="flex flex-col gap-4">
+                        {onlineUsers.length > 0 ? onlineUsers.map(user => (
+                          <div key={user.id} className="bg-slate-800/50 p-4 rounded-2xl border border-slate-700 flex justify-between items-center">
+                            <div className="flex flex-col">
+                              <span className="text-white font-bold">{user.name} {user.id === myId && '(나)'}</span>
+                              <div className="flex items-center gap-2 text-xs text-slate-400">
+                                <Trophy size={12} />
+                                <span>{user.trophies}</span>
+                                <span className={`ml-2 px-1.5 py-0.5 rounded-full text-[10px] ${user.status === 'PLAYING' ? 'bg-red-500/20 text-red-400' : 'bg-green-500/20 text-green-400'}`}>
+                                  {user.status === 'PLAYING' ? '전투 중' : '대기 중'}
+                                </span>
+                              </div>
+                            </div>
+                            {user.id !== myId && user.status === 'LOBBY' && (
+                              <button 
+                                onClick={() => {
+                                  socket?.emit('challengePlayer', user.id);
+                                  setNotification({ message: `${user.name}님에게 대전을 신청했습니다.`, color: '#3b82f6' });
+                                  setTimeout(() => setNotification(null), 3000);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-bold text-sm transition-all"
+                              >
+                                대전 신청
+                              </button>
+                            )}
                           </div>
-                        </div>
-                        {user.id !== myId && user.status === 'LOBBY' && (
-                          <button 
-                            onClick={() => {
-                              socket?.emit('challengePlayer', user.id);
-                              setNotification({ message: `${user.name}님에게 대전을 신청했습니다.`, color: '#3b82f6' });
-                              setTimeout(() => setNotification(null), 3000);
-                            }}
-                            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-bold text-sm transition-all"
-                          >
-                            대전 신청
-                          </button>
+                        )) : (
+                          <div className="text-slate-500 italic text-sm">현재 접속 중인 다른 유저가 없습니다.</div>
                         )}
                       </div>
-                    ))}
+                    </div>
+
+                    {/* Leaderboard */}
+                    <div>
+                      <div className="flex justify-between items-center mb-6">
+                        <h2 className="text-2xl font-black text-white flex items-center gap-2">
+                          <Trophy className="text-yellow-400" size={24} />
+                          전체 랭킹 (TOP 20)
+                        </h2>
+                        <button 
+                          onClick={fetchLeaderboard}
+                          className="text-xs text-blue-400 hover:text-blue-300 font-bold"
+                          disabled={isFetchingLeaderboard}
+                        >
+                          {isFetchingLeaderboard ? '갱신 중...' : '새로고침'}
+                        </button>
+                      </div>
+                      <div className="flex flex-col gap-3">
+                        {leaderboard.map((user, index) => (
+                          <div key={user.id} className={`p-4 rounded-2xl border flex justify-between items-center ${auth.currentUser?.uid === user.id ? 'bg-blue-600/20 border-blue-500' : 'bg-slate-900/50 border-slate-800'}`}>
+                            <div className="flex items-center gap-4">
+                              <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm ${index === 0 ? 'bg-yellow-400 text-slate-900' : index === 1 ? 'bg-slate-300 text-slate-900' : index === 2 ? 'bg-orange-400 text-slate-900' : 'bg-slate-800 text-slate-400'}`}>
+                                {index + 1}
+                              </div>
+                              <div className="flex flex-col">
+                                <span className="text-white font-bold">{user.username} {auth.currentUser?.uid === user.id && '(나)'}</span>
+                                <span className="text-[10px] text-slate-500">Lv.{user.level || 1}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 text-yellow-500 font-black">
+                              <Trophy size={16} />
+                              <span>{user.trophies}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
