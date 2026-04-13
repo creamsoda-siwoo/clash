@@ -70,7 +70,13 @@ const CARDS: Record<string, CardDef> = {
   electro_wizard: { id: 'electro_wizard', name: '일렉트로 마법사', type: 'unit', cost: 4, hp: 600, dmg: 80, speed: 3, range: 350, atkSpeed: 1500, color: '#60a5fa', targetCount: 2, rarity: 'legendary' },
   log: { id: 'log', name: '통나무', type: 'spell', cost: 2, dmg: 100, radius: 100, color: '#78350f', rarity: 'legendary' },
   sparky: { id: 'sparky', name: '스파키', type: 'unit', cost: 6, hp: 1200, dmg: 1100, speed: 1.5, range: 400, atkSpeed: 4000, color: '#facc15', isAoE: true, rarity: 'legendary' },
-  mini_pekka: { id: 'mini_pekka', name: '미니 페카', type: 'unit', cost: 4, hp: 1100, dmg: 600, speed: 4, range: 60, atkSpeed: 1600, color: '#312e81', rarity: 'rare' }
+  mini_pekka: { id: 'mini_pekka', name: '미니 페카', type: 'unit', cost: 4, hp: 1100, dmg: 600, speed: 4, range: 60, atkSpeed: 1600, color: '#312e81', rarity: 'rare' },
+  mega_knight: { id: 'mega_knight', name: '메가 나이트', type: 'unit', cost: 7, hp: 3300, dmg: 220, speed: 3, range: 80, atkSpeed: 1700, color: '#334155', isAoE: true, rarity: 'legendary' },
+  graveyard: { id: 'graveyard', name: '무덤', type: 'spell', cost: 5, dmg: 0, radius: 250, color: '#94a3b8', count: 15, rarity: 'epic' },
+  hog_rider: { id: 'hog_rider', name: '호그 라이더', type: 'unit', cost: 4, hp: 1400, dmg: 260, speed: 6, range: 60, atkSpeed: 1600, color: '#78350f', rarity: 'rare' },
+  inferno_tower: { id: 'inferno_tower', name: '인페르노 타워', type: 'unit', cost: 5, hp: 1400, dmg: 30, speed: 0, range: 450, atkSpeed: 400, color: '#ea580c', rarity: 'rare' },
+  electro_giant: { id: 'electro_giant', name: '일렉트로 자이언트', type: 'unit', cost: 7, hp: 3500, dmg: 150, speed: 1.5, range: 60, atkSpeed: 2100, color: '#3b82f6', isAoE: true, rarity: 'legendary' },
+  phoenix: { id: 'phoenix', name: '피닉스', type: 'unit', cost: 4, hp: 800, dmg: 120, speed: 3, range: 150, atkSpeed: 900, color: '#f97316', rarity: 'legendary' }
 };
 
 interface Player {
@@ -148,6 +154,8 @@ interface Tower {
 }
 
 const players: Record<string, Player> = {};
+const allUsers: Record<string, { id: string, name: string, trophies: number, status: 'LOBBY' | 'PLAYING' }> = {};
+let matchmakingQueue: any[] = [];
 let units: Unit[] = [];
 let projectiles: Projectile[] = [];
 let effects: Effect[] = [];
@@ -159,10 +167,23 @@ let bases: Record<'red' | 'blue', Base> = {
 
 let towers: Tower[] = [];
 
-let matchState = {
-  status: 'LOBBY', // 'LOBBY' | 'PLAYING' | 'GAMEOVER'
+interface MatchState {
+  status: 'LOBBY' | 'PLAYING' | 'GAMEOVER';
+  winner: string;
+  timeLeft: number;
+  isDoubleMana: boolean;
+  isOvertime: boolean;
+  theme: 'DEFAULT' | 'LAVA' | 'ICE' | 'FOREST';
+  isPvP?: boolean;
+}
+
+let matchState: MatchState = {
+  status: 'LOBBY',
   winner: '',
-  timeLeft: 120
+  timeLeft: 180,
+  isDoubleMana: false,
+  isOvertime: false,
+  theme: 'DEFAULT'
 };
 
 async function startServer() {
@@ -173,8 +194,10 @@ async function startServer() {
 
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
-  function resetMatch() {
-    matchState = { status: 'LOBBY', winner: '', timeLeft: 120 };
+  function resetMatch(isPvP: boolean = false) {
+    const themes: MatchState['theme'][] = ['DEFAULT', 'LAVA', 'ICE', 'FOREST'];
+    const randomTheme = themes[Math.floor(Math.random() * themes.length)];
+    matchState = { status: 'LOBBY', winner: '', timeLeft: 180, isDoubleMana: false, isOvertime: false, theme: randomTheme, isPvP };
     units = [];
     projectiles = [];
     effects = [];
@@ -220,7 +243,7 @@ async function startServer() {
   }
 
   function maintainBots() {
-    if (matchState.status !== 'PLAYING') return;
+    if (matchState.status !== 'PLAYING' || matchState.isPvP) return;
     const redPlayers = Object.values(players).filter(p => p.team === 'red');
     const bluePlayers = Object.values(players).filter(p => p.team === 'blue');
 
@@ -370,6 +393,27 @@ async function startServer() {
           io.emit('damageText', { x: t.obj.x, y: t.obj.y, amount: Math.floor(damage), color: '#ef4444' });
         });
         checkGameOver();
+      } else if (card.id === 'graveyard') {
+        const count = card.count || 10;
+        for (let i = 0; i < count; i++) {
+          const angle = Math.random() * Math.PI * 2;
+          const dist = Math.random() * card.radius!;
+          units.push({
+            id: Math.random().toString(36).substr(2, 9),
+            ownerId: p.id,
+            team: p.team,
+            cardId: 'skeletons',
+            x: x + Math.cos(angle) * dist,
+            y: y + Math.sin(angle) * dist,
+            hp: CARDS['skeletons'].hp! * mult,
+            maxHp: CARDS['skeletons'].hp! * mult,
+            cooldown: 0,
+            freezeTime: 0,
+            rageTime: 0,
+            poisonTime: 0,
+            level
+          });
+        }
       } else {
         // Fireball or Heal
         const isHeal = damage < 0;
@@ -408,16 +452,40 @@ async function startServer() {
   setInterval(() => {
     if (matchState.status !== 'PLAYING') return;
 
-    // Timer removed
-    // matchState.timeLeft -= TICK_RATE / 1000;
-    // if (matchState.timeLeft <= 0) { ... }
+    // Update Match State
+    matchState.timeLeft -= TICK_RATE / 1000;
+    
+    // Double Mana Check (Last 60 seconds)
+    if (matchState.timeLeft <= 60 && !matchState.isDoubleMana && !matchState.isOvertime) {
+      matchState.isDoubleMana = true;
+      io.emit('notification', { message: '엘릭서 2배 타임!', color: '#facc15' });
+    }
 
-    // Mana Regen (Base 1 mana per 2 seconds, scales slightly with trophies for bots)
+    if (matchState.timeLeft <= 0) {
+      if (!matchState.isOvertime) {
+        // Check for Draw -> Overtime
+        const redScore = (3000 - bases.blue.hp) + towers.filter(t => t.team === 'blue' && t.hp <= 0).length * 1000;
+        const blueScore = (3000 - bases.red.hp) + towers.filter(t => t.team === 'red' && t.hp <= 0).length * 1000;
+        
+        if (redScore === blueScore) {
+          matchState.isOvertime = true;
+          matchState.isDoubleMana = true;
+          matchState.timeLeft = 60; // 1 minute overtime
+          io.emit('notification', { message: '연장전! 서든데스!', color: '#ef4444' });
+        } else {
+          checkGameOver();
+        }
+      } else {
+        checkGameOver();
+      }
+    }
+
+    // Mana Regen
     for (const id in players) {
       const p = players[id];
-      let regenRate = 1 / (2000 / TICK_RATE);
+      let regenRate = (matchState.isDoubleMana ? 2 : 1) / (2000 / TICK_RATE);
       if (p.isBot) {
-        regenRate *= (1 + (p.trophies / 1000)); // Bots get slightly more mana at high trophies
+        regenRate *= (1 + (p.trophies / 2000));
       }
       p.mana = Math.min(10, p.mana + regenRate);
     }
@@ -551,8 +619,34 @@ async function startServer() {
             }
           }
         } else {
-          // Move directly to target
-          const angle = Math.atan2(target.y - u.y, target.x - u.x);
+          // Move logic with Bridge constraint
+          const mid = MAP_WIDTH / 2;
+          const riverWidth = 100;
+          const bridgeY1 = 250;
+          const bridgeY2 = 650;
+          const bridgeHeight = 100;
+
+          let moveTarget = { x: target.x, y: target.y };
+
+          // If unit needs to cross the river
+          const isCrossing = (u.x < mid - 50 && target.x > mid + 50) || (u.x > mid + 50 && target.x < mid - 50);
+          
+          if (isCrossing) {
+            // Pick closest bridge
+            const d1 = Math.abs(u.y - bridgeY1);
+            const d2 = Math.abs(u.y - bridgeY2);
+            const targetY = d1 < d2 ? bridgeY1 : bridgeY2;
+            
+            if (Math.abs(u.x - mid) > 60) {
+              // Move towards bridge entrance
+              moveTarget = { x: u.x < mid ? mid - 60 : mid + 60, y: targetY };
+            } else {
+              // On bridge or very close, move across
+              moveTarget = { x: target.x, y: targetY };
+            }
+          }
+
+          const angle = Math.atan2(moveTarget.y - u.y, moveTarget.x - u.x);
           u.x += Math.cos(angle) * currentSpeed;
           u.y += Math.sin(angle) * currentSpeed;
         }
@@ -729,6 +823,82 @@ async function startServer() {
     socket.emit("init", { id: socket.id, map: { width: MAP_WIDTH, height: MAP_HEIGHT }, cards: CARDS });
     socket.emit("syncMatch", matchState);
 
+    socket.on("updateProfile", (data: { name: string, trophies: number }) => {
+      allUsers[socket.id] = {
+        id: socket.id,
+        name: data.name,
+        trophies: data.trophies,
+        status: players[socket.id] ? 'PLAYING' : 'LOBBY'
+      };
+      io.emit("userList", Object.values(allUsers));
+    });
+
+    socket.on("challengePlayer", (targetId: string) => {
+      const challenger = allUsers[socket.id];
+      if (challenger && allUsers[targetId]) {
+        io.to(targetId).emit("challengeReceived", {
+          id: socket.id,
+          name: challenger.name,
+          trophies: challenger.trophies
+        });
+      }
+    });
+
+    socket.on("acceptChallenge", (challengerId: string) => {
+      const challenger = allUsers[challengerId];
+      const target = allUsers[socket.id];
+      
+      if (challenger && target) {
+        // Clear previous players
+        for (const id in players) delete players[id];
+
+        resetMatch(true); // Start as PvP
+        matchState.status = 'PLAYING';
+
+        // We need the deck info, so we'll tell both clients to joinGame with specific teams
+        io.to(challengerId).emit("startChallengedGame", { team: 'red' });
+        io.to(socket.id).emit("startChallengedGame", { team: 'blue' });
+      }
+    });
+
+    socket.on("declineChallenge", (challengerId: string) => {
+      io.to(challengerId).emit("challengeDeclined", { name: allUsers[socket.id]?.name || '상대방' });
+    });
+
+    io.emit("onlineCount", io.engine.clientsCount);
+
+    socket.on("joinQueue", (data: { name: string, deck: string[], trophies: number, cardLevels: Record<string, number> }) => {
+      // General match is now always against AI
+      for (const id in players) delete players[id];
+      resetMatch(false); // Start as AI match
+      matchState.status = 'PLAYING';
+
+      // Add the player
+      players[socket.id] = {
+        id: socket.id,
+        team: 'red',
+        name: data.name,
+        mana: 5,
+        isBot: false,
+        deck: data.deck,
+        trophies: data.trophies,
+        cardLevels: data.cardLevels
+      };
+
+      // Spawn a bot for the blue team
+      spawnBot('blue', data.trophies);
+
+      // Update allUsers status
+      if (allUsers[socket.id]) allUsers[socket.id].status = 'PLAYING';
+      
+      io.emit('syncMatch', matchState);
+      io.emit("userList", Object.values(allUsers));
+    });
+
+    socket.on("leaveQueue", () => {
+      matchmakingQueue = matchmakingQueue.filter(q => q.id !== socket.id);
+    });
+
     socket.on("joinGame", (data: { team: 'red'|'blue', name: string, deck: string[], trophies: number, cardLevels: Record<string, number> }) => {
       // If a game is already over or not started, reset it
       if (matchState.status !== 'PLAYING') {
@@ -767,15 +937,28 @@ async function startServer() {
       const card = CARDS[data.cardId];
       if (!card || p.mana < card.cost) return;
 
-      if (p.team === 'red' && data.x > MAP_WIDTH / 2) return;
-      if (p.team === 'blue' && data.x < MAP_WIDTH / 2) return;
+      // Deployment restrictions
+      const isRed = p.team === 'red';
+      const mid = MAP_WIDTH / 2;
+      if (isRed && data.x > mid) return;
+      if (!isRed && data.x < mid) return;
 
       p.mana -= card.cost;
       playCardLogic(p, card, data.x, data.y);
     });
 
+    socket.on("sendEmote", (emote: string) => {
+      const p = players[socket.id];
+      if (!p) return;
+      io.emit("emote", { playerId: socket.id, team: p.team, emote });
+    });
+
     socket.on("disconnect", () => {
       delete players[socket.id];
+      delete allUsers[socket.id];
+      matchmakingQueue = matchmakingQueue.filter(q => q.id !== socket.id);
+      io.emit("onlineCount", io.engine.clientsCount);
+      io.emit("userList", Object.values(allUsers));
       if (Object.values(players).filter(p => !p.isBot).length === 0) {
         matchState.status = 'LOBBY';
       }
