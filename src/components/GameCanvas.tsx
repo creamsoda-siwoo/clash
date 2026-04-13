@@ -5,25 +5,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
-
-interface CardDef {
-  id: string;
-  name: string;
-  type: 'unit' | 'spell';
-  cost: number;
-  hp?: number;
-  dmg: number;
-  speed?: number;
-  range?: number;
-  atkSpeed?: number;
-  radius?: number;
-  color: string;
-  count?: number;
-  isAoE?: boolean;
-  duration?: number;
-  targetCount?: number;
-  rarity: 'common' | 'rare' | 'epic' | 'legendary';
-}
+import { CARDS, CardDef } from '../constants';
 
 interface Player {
   id: string;
@@ -128,7 +110,7 @@ export default function GameCanvas() {
   
   const [myId, setMyId] = useState<string>('');
   const [mapInfo, setMapInfo] = useState({ width: 1600, height: 900 });
-  const [cardsDef, setCardsDef] = useState<Record<string, CardDef>>({});
+  const [cardsDef, setCardsDef] = useState<Record<string, CardDef>>(CARDS);
   const [matchState, setMatchState] = useState<MatchState>({ status: 'LOBBY', winner: '', timeLeft: 180, isDoubleMana: false, isOvertime: false, isPvP: false });
   const [emotes, setEmotes] = useState<Emote[]>([]);
   const [notification, setNotification] = useState<{ message: string, color: string } | null>(null);
