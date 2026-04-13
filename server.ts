@@ -115,6 +115,7 @@ interface MatchState {
   isOvertime: boolean;
   theme: 'DEFAULT' | 'LAVA' | 'ICE' | 'FOREST';
   isPvP?: boolean;
+  isPaused?: boolean;
 }
 
 let matchState: MatchState = {
@@ -123,7 +124,8 @@ let matchState: MatchState = {
   timeLeft: 180,
   isDoubleMana: false,
   isOvertime: false,
-  theme: 'DEFAULT'
+  theme: 'DEFAULT',
+  isPaused: false
 };
 
 async function startServer() {
@@ -137,7 +139,7 @@ async function startServer() {
   function resetMatch(isPvP: boolean = false) {
     const themes: MatchState['theme'][] = ['DEFAULT', 'LAVA', 'ICE', 'FOREST'];
     const randomTheme = themes[Math.floor(Math.random() * themes.length)];
-    matchState = { status: 'LOBBY', winner: '', timeLeft: 180, isDoubleMana: false, isOvertime: false, theme: randomTheme, isPvP };
+    matchState = { status: 'LOBBY', winner: '', timeLeft: 180, isDoubleMana: false, isOvertime: false, theme: randomTheme, isPvP, isPaused: false };
     units = [];
     projectiles = [];
     effects = [];
@@ -161,23 +163,40 @@ async function startServer() {
   }
 
   let botCounter = 1;
-  function spawnBot(team: 'red' | 'blue', playerTrophies: number) {
+  function spawnBot(team: 'red' | 'blue', playerTrophies: number, playerCardLevels: Record<string, number> = {}) {
     const id = 'bot_' + botCounter++;
     const allCardIds = Object.keys(CARDS);
-    const botDeck = allCardIds.sort(() => 0.5 - Math.random()).slice(0, 6);
     
-    const botLevel = 1 + Math.floor(playerTrophies / 100);
+    // Create a more balanced deck for the bot
+    const units = allCardIds.filter(cid => CARDS[cid].type === 'unit');
+    const spells = allCardIds.filter(cid => CARDS[cid].type === 'spell');
+    
+    const botDeck = [
+      ...units.sort(() => 0.5 - Math.random()).slice(0, 4),
+      ...spells.sort(() => 0.5 - Math.random()).slice(0, 2)
+    ];
+    
+    // Calculate average player card level
+    const levels = Object.values(playerCardLevels);
+    const avgLevel = levels.length > 0 ? Math.round(levels.reduce((a, b) => a + b, 0) / levels.length) : 1;
+    
+    // Bot level scales with player trophies and average card level
+    let levelOffset = 0;
+    if (playerTrophies < 500) levelOffset = -1;
+    else if (playerTrophies > 2000) levelOffset = 1;
+
+    const botLevel = Math.max(1, avgLevel + levelOffset);
     const botCardLevels: Record<string, number> = {};
-    botDeck.forEach(id => botCardLevels[id] = botLevel);
+    botDeck.forEach(cid => botCardLevels[cid] = botLevel);
 
     players[id] = {
       id,
       team,
-      name: `${team === 'red' ? '[RED]' : '[BLUE]'} AI`,
+      name: `${team === 'red' ? '[RED]' : '[BLUE]'} AI 사령관`,
       mana: 5,
       isBot: true,
       deck: botDeck,
-      trophies: playerTrophies,
+      trophies: Math.max(0, playerTrophies + Math.floor(Math.random() * 41) - 20), // Trophies +/- 20
       cardLevels: botCardLevels
     };
   }
@@ -188,10 +207,16 @@ async function startServer() {
     const bluePlayers = Object.values(players).filter(p => p.team === 'blue');
 
     let maxTrophies = 0;
-    Object.values(players).forEach(p => { if (!p.isBot && p.trophies > maxTrophies) maxTrophies = p.trophies; });
+    let avgCardLevels: Record<string, number> = {};
+    Object.values(players).forEach(p => { 
+      if (!p.isBot && p.trophies > maxTrophies) {
+        maxTrophies = p.trophies;
+        avgCardLevels = p.cardLevels;
+      }
+    });
 
-    if (redPlayers.length === 0) spawnBot('red', maxTrophies);
-    if (bluePlayers.length === 0) spawnBot('blue', maxTrophies);
+    if (redPlayers.length === 0) spawnBot('red', maxTrophies, avgCardLevels);
+    if (bluePlayers.length === 0) spawnBot('blue', maxTrophies, avgCardLevels);
   }
 
   // Bot AI Loop
@@ -202,7 +227,8 @@ async function startServer() {
       const p = players[id];
       if (p.isBot && p.mana >= 3) {
         // Difficulty scaling: Higher trophies = faster decision making
-        const decisionChance = Math.min(0.2, 0.05 + (p.trophies / 2000)); 
+        // Beginners: ~0.02 (one card every 10s), Experts: ~0.2 (one card every 1s)
+        const decisionChance = Math.min(0.2, 0.02 + (p.trophies / 10000)); 
         
         if (Math.random() < decisionChance) {
           const cardId = p.deck[Math.floor(Math.random() * p.deck.length)];
@@ -390,7 +416,7 @@ async function startServer() {
 
   // Main Game Loop
   setInterval(() => {
-    if (matchState.status !== 'PLAYING') return;
+    if (matchState.status !== 'PLAYING' || matchState.isPaused) return;
 
     // Update Match State
     matchState.timeLeft -= TICK_RATE / 1000;
@@ -425,7 +451,9 @@ async function startServer() {
       const p = players[id];
       let regenRate = (matchState.isDoubleMana ? 2 : 1) / (2000 / TICK_RATE);
       if (p.isBot) {
-        regenRate *= (1 + (p.trophies / 2000));
+        // Bot mana scales with trophies: EASY at low trophies, HARD at high
+        const multiplier = 0.7 + (p.trophies / 2000); 
+        regenRate *= Math.min(2.0, multiplier);
       }
       p.mana = Math.min(10, p.mana + regenRate);
     }
@@ -825,8 +853,8 @@ async function startServer() {
         cardLevels: data.cardLevels
       };
 
-      // Spawn a bot for the blue team
-      spawnBot('blue', data.trophies);
+      // Spawn a bot for the blue team with matching trophies and levels
+      spawnBot('blue', data.trophies, data.cardLevels);
 
       // Update allUsers status
       if (allUsers[socket.id]) allUsers[socket.id].status = 'PLAYING';
@@ -891,6 +919,17 @@ async function startServer() {
       const p = players[socket.id];
       if (!p) return;
       io.emit("emote", { playerId: socket.id, team: p.team, emote });
+    });
+
+    socket.on('togglePause', () => {
+      if (matchState.status === 'PLAYING') {
+        matchState.isPaused = !matchState.isPaused;
+        io.emit('syncMatch', matchState);
+        io.emit('notification', { 
+          message: matchState.isPaused ? '게임 일시정지' : '게임 재개', 
+          color: matchState.isPaused ? '#f87171' : '#4ade80' 
+        });
+      }
     });
 
     socket.on("disconnect", () => {

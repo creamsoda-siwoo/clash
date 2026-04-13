@@ -75,6 +75,7 @@ interface MatchState {
   isOvertime?: boolean;
   theme?: 'DEFAULT' | 'LAVA' | 'ICE' | 'FOREST';
   isPvP?: boolean;
+  isPaused?: boolean;
 }
 
 interface Emote {
@@ -97,7 +98,7 @@ interface FloatingText {
 export default function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
-  
+
   const [players, setPlayers] = useState<Record<string, Player>>({});
   const [units, setUnits] = useState<Unit[]>([]);
   const [projectiles, setProjectiles] = useState<Projectile[]>([]);
@@ -107,7 +108,7 @@ export default function GameCanvas() {
     blue: { team: 'blue', x: 1450, y: 450, hp: 3000, maxHp: 3000, radius: 80, freezeTime: 0 }
   });
   const [towers, setTowers] = useState<Tower[]>([]);
-  
+
   const [myId, setMyId] = useState<string>('');
   const [mapInfo, setMapInfo] = useState({ width: 1600, height: 900 });
   const [cardsDef, setCardsDef] = useState<Record<string, CardDef>>(CARDS);
@@ -121,10 +122,10 @@ export default function GameCanvas() {
   const [incomingChallenge, setIncomingChallenge] = useState<any>(null);
   const [isSearching, setIsSearching] = useState(false);
   const [showEmoteMenu, setShowEmoteMenu] = useState(false);
-  
+
   const [showLobby, setShowLobby] = useState(true);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
-  
+
   // New States for Deck & Trophies
   const [trophies, setTrophies] = useState<number>(0);
   const [gold, setGold] = useState<number>(0);
@@ -140,18 +141,36 @@ export default function GameCanvas() {
   const [level, setLevel] = useState<number>(1);
   const [xp, setXp] = useState<number>(0);
   const [missions, setMissions] = useState<{ id: string, desc: string, target: number, current: number, reward: number, completed: boolean }[]>([]);
+  const [shopCards, setShopCards] = useState<string[]>(['knight', 'archer', 'giant']);
+  const [claimedTrophyRewards, setClaimedTrophyRewards] = useState<number[]>([]);
+  const trophyMilestones = [
+    { trophies: 100, reward: 500, label: '500 Gold' },
+    { trophies: 300, reward: 1000, label: '1000 Gold' },
+    { trophies: 500, reward: 2000, label: '2000 Gold' },
+    { trophies: 1000, reward: 5000, label: '5000 Gold' },
+    { trophies: 2000, reward: 10000, label: '10000 Gold' },
+  ];
 
   // Auth States
   const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [hasClaimedDailyBonus, setHasClaimedDailyBonus] = useState<boolean>(false);
   useEffect(() => {
-    if (isLoggedIn && missions.length === 0) {
+    if (isLoggedIn && missions.length === 0 && !hasClaimedDailyBonus) {
       setMissions([
         { id: 'win_1', desc: '전투 1회 완료', target: 1, current: 0, reward: 50, completed: false },
         { id: 'trophy_10', desc: '트로피 10점 획득', target: 10, current: 0, reward: 100, completed: false },
         { id: 'gacha_1', desc: '카드 1회 뽑기', target: 1, current: 0, reward: 30, completed: false }
       ]);
     }
-  }, [isLoggedIn, missions.length]);
+  }, [isLoggedIn, missions.length, hasClaimedDailyBonus]);
+
+  // Auto-dismiss notifications
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
 
   const updateMission = (id: string, amount: number) => {
     setMissions(prev => prev.map(m => {
@@ -183,6 +202,79 @@ export default function GameCanvas() {
       }, { merge: true });
     } catch (e) {
       console.error('Firestore save error:', e);
+    }
+  };
+
+  const handleGacha = (count: number) => {
+    const cost = count === 10 ? 900 : 100 * count;
+    if (gold < cost) return;
+
+    const newGold = gold - cost;
+    setGold(newGold);
+    
+    // Use local references to update properly in a loop
+    let currentUnlocked = [...unlockedCards];
+    let currentFragments = { ...fragments };
+    const results: { cardId: string, isNew: boolean }[] = [];
+
+    for (let i = 0; i < count; i++) {
+      const rand = Math.random();
+      let targetRarity: 'common' | 'rare' | 'epic' | 'legendary' = 'common';
+      
+      // Better rates for 10-pulls? (Optional, but let's stick to standard for now or slight boost)
+      const legendaryChance = count === 10 ? 0.05 : 0.02;
+      const epicChance = count === 10 ? 0.15 : 0.10;
+      
+      if (rand > 1 - legendaryChance) targetRarity = 'legendary';
+      else if (rand > 1 - legendaryChance - epicChance) targetRarity = 'epic';
+      else if (rand > 0.5) targetRarity = 'rare';
+
+      const pool = (Object.values(CARDS) as CardDef[]).filter(c => c.rarity === targetRarity);
+      const drawn = pool[Math.floor(Math.random() * pool.length)];
+      
+      const isNew = !currentUnlocked.includes(drawn.id);
+      if (isNew) {
+        currentUnlocked.push(drawn.id);
+      } else {
+        currentFragments[targetRarity] = (currentFragments[targetRarity] || 0) + 1;
+      }
+      results.push({ cardId: drawn.id, isNew });
+    }
+
+    setUnlockedCards(currentUnlocked);
+    setFragments(currentFragments);
+    saveToServer({ gold: newGold, unlockedCards: currentUnlocked, fragments: currentFragments });
+    setGachaResult(count === 1 ? results[0] : results);
+    updateMission('gacha', count);
+    
+    if (count === 10) {
+      setNotification({ message: '10회 연속 소환 완료!', color: '#a855f7' });
+    }
+  };
+
+  const refreshShop = () => {
+    const refreshCost = 50;
+    if (gold >= refreshCost) {
+      const newGold = gold - refreshCost;
+      setGold(newGold);
+      const allCardIds = Object.keys(CARDS);
+      const newShopCards = allCardIds.sort(() => 0.5 - Math.random()).slice(0, 3);
+      setShopCards(newShopCards);
+      saveToServer({ gold: newGold, shopCards: newShopCards });
+      setNotification({ message: '상점이 갱신되었습니다! (-50G)', color: '#3b82f6' });
+    } else {
+      setNotification({ message: '골드가 부족합니다!', color: '#ef4444' });
+    }
+  };
+
+  const claimTrophyReward = (milestone: number, amount: number) => {
+    if (trophies >= milestone && !claimedTrophyRewards.includes(milestone)) {
+      const newGold = gold + amount;
+      const newClaimed = [...claimedTrophyRewards, milestone];
+      setGold(newGold);
+      setClaimedTrophyRewards(newClaimed);
+      saveToServer({ gold: newGold, claimedTrophyRewards: newClaimed });
+      setNotification({ message: `트로피 보상 획득! +${amount} Gold`, color: '#facc15' });
     }
   };
 
@@ -222,8 +314,8 @@ export default function GameCanvas() {
         // Fetch user data from Firestore
         const userDoc = await getDoc(doc(db, 'users', user.uid));
         let userData: any;
-        const defaultCards = ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'];
-        
+        const defaultCards = ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons', 'zap'];
+
         if (userDoc.exists()) {
           userData = userDoc.data();
           setPlayerName(userData.username);
@@ -232,20 +324,24 @@ export default function GameCanvas() {
           setLevel(userData.level || 1);
           setXp(userData.xp || 0);
           setCardLevels(userData.cardLevels || {});
-          
+
           const loadedUnlocked = userData.unlockedCards || [];
           const loadedDeck = userData.selectedDeck || [];
-          
-          // Ensure they have default cards if somehow empty
+
+          // Strictly use loaded data
           const finalUnlocked = loadedUnlocked.length > 0 ? loadedUnlocked : defaultCards;
-          const finalDeck = loadedDeck.length === 6 ? loadedDeck : defaultCards;
-          
+          const finalDeck = loadedDeck.length <= 6 ? loadedDeck : [];
+
           setUnlockedCards(finalUnlocked);
           setSelectedDeck(finalDeck);
           setFragments(userData.fragments || { common: 0, rare: 0, epic: 0, legendary: 0 });
+          setShopCards(userData.shopCards || ['knight', 'archer', 'giant']);
+          setClaimedTrophyRewards(userData.claimedTrophyRewards || []);
+          setHasClaimedDailyBonus(userData.hasClaimedDailyBonus || false);
           setMissions(userData.missions || [
-            { id: 'win1', desc: '전투에서 1회 승리하기', target: 1, current: 0, reward: 200, completed: false },
-            { id: 'play5', desc: '유닛 5회 소환하기', target: 5, current: 0, reward: 100, completed: false }
+            { id: 'win_1', desc: '전투 1회 완료', target: 1, current: 0, reward: 50, completed: false },
+            { id: 'trophy_10', desc: '트로피 10점 획득', target: 10, current: 0, reward: 100, completed: false },
+            { id: 'gacha_1', desc: '카드 1회 뽑기', target: 1, current: 0, reward: 30, completed: false }
           ]);
           setIsLoggedIn(true);
         } else {
@@ -259,7 +355,7 @@ export default function GameCanvas() {
             xp: 0,
             cardLevels: {},
             unlockedCards: defaultCards,
-            selectedDeck: defaultCards,
+            selectedDeck: [],
             fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
             missions: [
               { id: 'win1', desc: '전투에서 1회 승리하기', target: 1, current: 0, reward: 200, completed: false },
@@ -310,12 +406,12 @@ export default function GameCanvas() {
 
     newSocket.on('startChallengedGame', (data: { team: 'red' | 'blue' }) => {
       setIncomingChallenge(null);
-      newSocket.emit('joinGame', { 
-        team: data.team, 
-        name: playerName, 
-        deck: selectedDeck, 
-        trophies, 
-        cardLevels 
+      newSocket.emit('joinGame', {
+        team: data.team,
+        name: playerName,
+        deck: selectedDeck,
+        trophies,
+        cardLevels
       });
       setShowLobby(false);
     });
@@ -343,12 +439,12 @@ export default function GameCanvas() {
 
     newSocket.on('matchResult', (data: { result: string, trophyChange: number, goldChange: number }) => {
       setMatchResultInfo(data);
-      
+
       setTrophies(prevT => {
         const newTrophies = Math.max(0, prevT + data.trophyChange);
         setGold(prevG => {
           const newGold = prevG + data.goldChange;
-          
+
           // Update XP and Level
           setXp(prevXp => {
             let newXp = prevXp + (data.result === 'win' ? 50 : 20);
@@ -360,7 +456,7 @@ export default function GameCanvas() {
               setLevel(newLevel);
               setNotification({ message: `레벨 업! Lv.${newLevel} 달성!`, color: '#facc15' });
             }
-            
+
             // Update Missions
             setMissions(prevM => {
               const newM = prevM.map(m => {
@@ -373,24 +469,22 @@ export default function GameCanvas() {
                 }
                 return m;
               });
-              
-              saveToServer({ 
-                trophies: newTrophies, 
-                gold: newGold, 
-                cardLevels, 
-                unlockedCards, 
-                selectedDeck, 
-                fragments,
+
+              // CRITICAL: Only save changed fields to avoid overwriting other data with stale state
+              saveToServer({
+                trophies: newTrophies,
+                gold: newGold,
                 level: newLevel,
                 xp: newXp,
-                missions: newM
+                missions: newM,
+                updatedAt: new Date().toISOString()
               });
               return newM;
             });
-            
+
             return newXp;
           });
-          
+
           return newGold;
         });
         return newTrophies;
@@ -415,7 +509,7 @@ export default function GameCanvas() {
       if (data.bases) setBases(data.bases);
       if (data.towers) setTowers(data.towers);
       if (data.matchState) setMatchState(data.matchState);
-      
+
       setUnits(prev => {
         const updated = data.units.map(serverUnit => {
           const existing = prev.find(u => u.id === serverUnit.id);
@@ -442,13 +536,13 @@ export default function GameCanvas() {
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!socket || !selectedCardId || matchState.status !== 'PLAYING') return;
-    
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
     const rect = canvas.getBoundingClientRect();
     const isPortrait = window.innerHeight > window.innerWidth;
-    
+
     let logicalX, logicalY;
 
     if (isPortrait) {
@@ -499,7 +593,7 @@ export default function GameCanvas() {
       canvas.height = window.innerHeight;
 
       const isPortrait = window.innerHeight > window.innerWidth;
-      
+
       let scale, offsetX, offsetY;
 
       if (isPortrait) {
@@ -519,13 +613,13 @@ export default function GameCanvas() {
 
       ctx.save();
       ctx.translate(offsetX, offsetY);
-      
+
       if (isPortrait) {
         // Rotate 90 degrees clockwise and translate
         ctx.rotate(Math.PI / 2);
         ctx.translate(0, -mapInfo.height * scale);
       }
-      
+
       ctx.scale(scale, scale);
 
       // Draw Map Boundary
@@ -539,7 +633,7 @@ export default function GameCanvas() {
 
       ctx.fillStyle = theme.bg;
       ctx.fillRect(0, 0, mapInfo.width, mapInfo.height);
-      
+
       // Draw River
       ctx.fillStyle = theme.river;
       ctx.fillRect(mapInfo.width / 2 - 50, 0, 100, mapInfo.height);
@@ -603,7 +697,7 @@ export default function GameCanvas() {
         ctx.lineWidth = 6;
         ctx.strokeStyle = base.team === 'red' ? '#ef4444' : '#3b82f6';
         ctx.stroke();
-        
+
         ctx.beginPath();
         ctx.arc(base.x, base.y, base.radius * 0.5, 0, Math.PI * 2);
         ctx.fillStyle = base.team === 'red' ? '#fca5a5' : '#93c5fd';
@@ -614,12 +708,12 @@ export default function GameCanvas() {
         const hpWidth = 120;
         const hpPercent = base.hp / base.maxHp;
         ctx.fillStyle = '#ef4444';
-        ctx.fillRect(base.x - hpWidth/2, base.y - base.radius - 25, hpWidth, 10);
+        ctx.fillRect(base.x - hpWidth / 2, base.y - base.radius - 25, hpWidth, 10);
         ctx.fillStyle = '#22c55e';
-        ctx.fillRect(base.x - hpWidth/2, base.y - base.radius - 25, hpWidth * hpPercent, 10);
+        ctx.fillRect(base.x - hpWidth / 2, base.y - base.radius - 25, hpWidth * hpPercent, 10);
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 2;
-        ctx.strokeRect(base.x - hpWidth/2, base.y - base.radius - 25, hpWidth, 10);
+        ctx.strokeRect(base.x - hpWidth / 2, base.y - base.radius - 25, hpWidth, 10);
       });
 
       // Draw Towers
@@ -638,12 +732,12 @@ export default function GameCanvas() {
         const hpWidth = 60;
         const hpPercent = tower.hp / tower.maxHp;
         ctx.fillStyle = '#ef4444';
-        ctx.fillRect(tower.x - hpWidth/2, tower.y - tower.radius - 15, hpWidth, 6);
+        ctx.fillRect(tower.x - hpWidth / 2, tower.y - tower.radius - 15, hpWidth, 6);
         ctx.fillStyle = '#22c55e';
-        ctx.fillRect(tower.x - hpWidth/2, tower.y - tower.radius - 15, hpWidth * hpPercent, 6);
+        ctx.fillRect(tower.x - hpWidth / 2, tower.y - tower.radius - 15, hpWidth * hpPercent, 6);
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = 1;
-        ctx.strokeRect(tower.x - hpWidth/2, tower.y - tower.radius - 15, hpWidth, 6);
+        ctx.strokeRect(tower.x - hpWidth / 2, tower.y - tower.radius - 15, hpWidth, 6);
       });
 
       // Lerp and Draw Units
@@ -679,9 +773,9 @@ export default function GameCanvas() {
         const hpWidth = size * 2;
         const hpPercent = u.hp / u.maxHp;
         ctx.fillStyle = '#ef4444';
-        ctx.fillRect(u.x - hpWidth/2, u.y - size - 12, hpWidth, 4);
+        ctx.fillRect(u.x - hpWidth / 2, u.y - size - 12, hpWidth, 4);
         ctx.fillStyle = '#22c55e';
-        ctx.fillRect(u.x - hpWidth/2, u.y - size - 12, hpWidth * hpPercent, 4);
+        ctx.fillRect(u.x - hpWidth / 2, u.y - size - 12, hpWidth * hpPercent, 4);
       });
 
       // Draw Projectiles
@@ -711,18 +805,18 @@ export default function GameCanvas() {
       floatingTextsRef.current.forEach(ft => {
         const alpha = Math.max(0, Math.min(1, ft.life));
         const hexAlpha = Math.floor(alpha * 255).toString(16).padStart(2, '0');
-        
+
         ctx.fillStyle = `${ft.color}${hexAlpha}`;
         ctx.font = 'bold 24px Inter, sans-serif';
         ctx.textAlign = 'center';
-        
+
         const text = ft.color === '#22c55e' ? `+${ft.amount}` : `-${ft.amount}`;
-        
+
         ctx.strokeStyle = `rgba(0,0,0,${alpha})`;
         ctx.lineWidth = 3;
         ctx.strokeText(text, ft.x, ft.y);
         ctx.fillText(text, ft.x, ft.y);
-        
+
         ft.y -= 1;
         ft.life -= 0.02;
       });
@@ -751,13 +845,13 @@ export default function GameCanvas() {
       if (me && selectedCardId && matchState.status === 'PLAYING') {
         const logicalX = (mousePos.current.x - offsetX) / scale;
         const logicalY = (mousePos.current.y - offsetY) / scale;
-        
+
         const isValid = (me.team === 'red' && logicalX <= mapInfo.width / 2) || (me.team === 'blue' && logicalX >= mapInfo.width / 2);
-        
+
         ctx.beginPath();
         const card = cardsDef[selectedCardId];
         const previewRadius = card?.type === 'spell' ? card.radius! : (card?.id === 'giant' ? 30 : 15);
-        
+
         ctx.arc(logicalX, logicalY, previewRadius, 0, Math.PI * 2);
         ctx.fillStyle = isValid ? 'rgba(255, 255, 255, 0.3)' : 'rgba(239, 68, 68, 0.3)';
         ctx.fill();
@@ -786,17 +880,17 @@ export default function GameCanvas() {
       newDeck = [...selectedDeck, cardId];
     }
     setSelectedDeck(newDeck);
-    saveToServer({ trophies, gold, cardLevels, unlockedCards, selectedDeck: newDeck, fragments });
+    saveToServer({ selectedDeck: newDeck });
   };
 
   const handleJoinGame = () => {
     if (!socket || selectedDeck.length !== 6) return;
     updateMission('win', 1);
-    socket.emit('joinQueue', { 
-      name: playerName, 
-      deck: selectedDeck, 
-      trophies, 
-      cardLevels 
+    socket.emit('joinQueue', {
+      name: playerName,
+      deck: selectedDeck,
+      trophies,
+      cardLevels
     });
   };
 
@@ -832,7 +926,28 @@ export default function GameCanvas() {
       case 'poison': return <Droplets size={24} className="text-slate-900" />;
       case 'healer': return <Heart size={24} className="text-slate-900" />;
       case 'vampire': return <Skull size={24} className="text-slate-900" />;
-      case 'mecha': return <Cpu size={24} className="text-slate-900" />;
+      case 'mini_pekka': return <Shield size={24} className="text-slate-900" />;
+      case 'barbarians': return <Users size={24} className="text-slate-900" />;
+      case 'witch': return <Zap size={24} className="text-slate-900" />;
+      case 'ice_spirit': return <Snowflake size={24} className="text-slate-900" />;
+      case 'fire_spirit': return <Flame size={24} className="text-slate-900" />;
+      case 'bandit': return <Crosshair size={24} className="text-slate-900" />;
+      case 'giant_skeleton': return <Skull size={24} className="text-slate-900" />;
+      case 'goblins': return <Users size={24} className="text-slate-900" />;
+      case 'princess': return <Target size={24} className="text-slate-900" />;
+      case 'royal_giant': return <Swords size={24} className="text-slate-900" />;
+      case 'miner': return <Home size={24} className="text-slate-900" />;
+      case 'rocket': return <Zap size={24} className="text-slate-900" />;
+      case 'executioner': return <Swords size={24} className="text-slate-900" />;
+      case 'balloon': return <Skull size={24} className="text-slate-900" />;
+      case 'electro_spirit': return <Zap size={24} className="text-blue-900" />;
+      case 'night_witch': return <Skull size={24} className="text-purple-900" />;
+      case 'inferno_dragon': return <Flame size={24} className="text-green-900" />;
+      case 'zap': return <Zap size={24} className="text-sky-400" />;
+      case 'tornado': return <Loader2 size={24} className="text-slate-400" />;
+      case 'ram_rider': return <Swords size={24} className="text-indigo-900" />;
+      case 'magic_archer': return <Target size={24} className="text-orange-900" />;
+      case 'ice_wizard': return <Snowflake size={24} className="text-blue-300" />;
       default: return <Swords size={24} className="text-slate-900" />;
     }
   };
@@ -897,22 +1012,22 @@ export default function GameCanvas() {
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
-      <canvas 
-        ref={canvasRef} 
+      <canvas
+        ref={canvasRef}
         className="block w-full h-full cursor-crosshair"
         onClick={handleCanvasClick}
       />
-      
+
       {/* Notification Banner */}
       <AnimatePresence>
         {notification && (
-          <motion.div 
+          <motion.div
             initial={{ y: -100, opacity: 0 }}
             animate={{ y: 50, opacity: 1 }}
             exit={{ y: -100, opacity: 0 }}
             className="absolute top-0 left-1/2 -translate-x-1/2 z-[100] pointer-events-none"
           >
-            <div 
+            <div
               className="px-8 py-4 rounded-2xl shadow-2xl border-2 font-black text-2xl tracking-widest"
               style={{ backgroundColor: notification.color + '22', borderColor: notification.color, color: notification.color }}
             >
@@ -922,19 +1037,63 @@ export default function GameCanvas() {
         )}
       </AnimatePresence>
 
-      {/* Double Mana Indicator */}
       {matchState.isDoubleMana && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-yellow-500/20 text-yellow-400 px-4 py-1 rounded-full border border-yellow-500/50 font-bold text-sm animate-pulse z-40">
           ELIXIR x2
         </div>
       )}
 
+      {/* Pause Button (Only during play) */}
+      {matchState.status === 'PLAYING' && (
+        <button
+          onClick={() => socket?.emit('togglePause')}
+          className="absolute top-4 right-4 z-50 bg-slate-900/80 hover:bg-slate-800 text-white p-3 rounded-full border border-slate-700 shadow-xl transition-all active:scale-95"
+          title={matchState.isPaused ? "재개" : "일시정지"}
+        >
+          {matchState.isPaused ? (
+            <div className="w-6 h-6 flex items-center justify-center">▶️</div>
+          ) : (
+            <div className="w-6 h-6 flex items-center justify-center">⏸️</div>
+          )}
+        </button>
+      )}
+
+      {/* Pause Overlay */}
+      <AnimatePresence>
+        {matchState.isPaused && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-slate-950/60 backdrop-blur-sm z-[45] flex flex-col items-center justify-center"
+          >
+            <motion.div
+              initial={{ scale: 0.8 }}
+              animate={{ scale: 1 }}
+              exit={{ scale: 0.8 }}
+              className="bg-slate-900 p-12 rounded-[3rem] border-4 border-slate-800 shadow-[0_0_100px_rgba(30,58,138,0.3)] flex flex-col items-center"
+            >
+              <div className="text-6xl mb-6">⏸️</div>
+              <h2 className="text-5xl font-black text-white mb-2 tracking-tighter">GAME PAUSED</h2>
+              <p className="text-slate-400 mb-10 font-medium">일시정지 중입니다...</p>
+              <button
+                onClick={() => socket?.emit('togglePause')}
+                className="bg-blue-600 hover:bg-blue-500 text-white px-10 py-4 rounded-2xl font-black text-xl shadow-lg transition-all active:scale-90 flex items-center gap-3"
+              >
+                <span>계속하기</span>
+                <span>▶️</span>
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Emote Buttons */}
       {matchState.status === 'PLAYING' && (
         <div className="absolute bottom-32 left-4 flex flex-col items-start gap-2 z-40">
           <AnimatePresence>
             {showEmoteMenu && (
-              <motion.div 
+              <motion.div
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
@@ -966,7 +1125,7 @@ export default function GameCanvas() {
       {showLobby && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-950/90 backdrop-blur-md z-50 overflow-y-auto p-4 sm:p-10">
           <div className="bg-slate-900 border border-slate-800 rounded-3xl shadow-2xl max-w-4xl w-full flex flex-col h-[90vh] sm:h-[80vh]">
-            
+
             {/* Header */}
             <div className="flex flex-col sm:flex-row justify-between items-center p-4 sm:p-6 border-b border-slate-800 gap-4">
               <div className="flex items-center gap-4">
@@ -977,8 +1136,8 @@ export default function GameCanvas() {
                   <div className="flex flex-col">
                     <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight leading-tight">{playerName}</h1>
                     <div className="w-24 sm:w-32 h-2 bg-slate-800 rounded-full overflow-hidden border border-slate-700 mt-1">
-                      <div 
-                        className="h-full bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.5)]" 
+                      <div
+                        className="h-full bg-yellow-400 shadow-[0_0_10px_rgba(250,204,21,0.5)]"
                         style={{ width: `${Math.min(100, (xp / (level * 100)) * 100)}%` }}
                       />
                     </div>
@@ -993,7 +1152,7 @@ export default function GameCanvas() {
                   <Trophy className="text-blue-400" size={16} />
                   <span className="text-blue-400 font-bold text-sm sm:text-base">{trophies}</span>
                 </div>
-                <button 
+                <button
                   onClick={() => signOut(auth)}
                   className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 sm:px-4 sm:py-2 rounded-xl font-bold transition-colors border border-slate-600 text-sm"
                 >
@@ -1012,7 +1171,7 @@ export default function GameCanvas() {
                 { id: 'PACHINKO', label: '빠칭코', color: 'border-green-500' },
                 { id: 'USERS', label: '랭킹 & 유저', color: 'border-slate-500' }
               ].map(tab => (
-                <button 
+                <button
                   key={tab.id}
                   onClick={() => { setActiveTab(tab.id as any); setGachaResult(null); setPachinkoResult(null); }}
                   className={`flex-1 min-w-[80px] py-4 font-bold text-sm sm:text-lg transition-colors whitespace-nowrap ${activeTab === tab.id ? `bg-slate-800 text-white border-b-2 ${tab.color}` : 'text-slate-400 hover:bg-slate-800/50'}`}
@@ -1024,7 +1183,7 @@ export default function GameCanvas() {
 
             {/* Content */}
             <div className="flex-1 overflow-y-auto p-6">
-              
+
               {activeTab === 'BATTLE' && (
                 <div className="flex-1 overflow-y-auto p-4 sm:p-8">
                   <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 h-full">
@@ -1063,8 +1222,8 @@ export default function GameCanvas() {
                           onClick={handleJoinGame}
                           disabled={isSearching || selectedDeck.length !== 6}
                           className={`group relative px-20 py-8 rounded-3xl font-black text-4xl transition-all transform hover:scale-105 active:scale-95 shadow-2xl
-                            ${isSearching || selectedDeck.length !== 6 
-                              ? 'bg-slate-700 text-slate-500 cursor-not-allowed' 
+                            ${isSearching || selectedDeck.length !== 6
+                              ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
                               : 'bg-gradient-to-br from-blue-600 to-blue-400 text-white hover:shadow-[0_0_50px_rgba(59,130,246,0.5)]'
                             }
                           `}
@@ -1080,45 +1239,99 @@ export default function GameCanvas() {
                       </div>
                     </div>
 
-                    {/* Missions Section */}
-                    <div className="flex flex-col space-y-4 bg-slate-800/30 p-6 rounded-3xl border border-slate-700/50">
-                      <h3 className="text-xl font-black text-white flex items-center gap-2">
-                        <Trophy size={20} className="text-yellow-400" />
-                        오늘의 미션
-                      </h3>
-                      <div className="space-y-3 overflow-y-auto max-h-[500px] pr-2 custom-scrollbar">
-                        {missions.map(m => (
-                          <div key={m.id} className={`p-4 rounded-2xl border transition-all ${m.completed ? 'bg-green-500/10 border-green-500/30' : 'bg-slate-900/50 border-slate-700'}`}>
-                            <div className="flex justify-between items-start mb-2">
-                              <span className={`font-bold text-sm ${m.completed ? 'text-green-400' : 'text-slate-300'}`}>{m.desc}</span>
-                              {m.completed && (
-                                <button 
-                                  onClick={() => {
-                                    setGold(g => g + m.reward);
-                                    setMissions(prev => prev.filter(mission => mission.id !== m.id));
-                                    setNotification({ message: `보상 획득! +${m.reward} 골드`, color: '#22c55e' });
-                                  }}
-                                  className="bg-green-500 text-slate-950 text-[10px] font-black px-2 py-1 rounded-lg hover:bg-green-400 shadow-lg"
-                                >
-                                  보상 받기
-                                </button>
-                              )}
+                    {/* Right Column: Missions & Trophy Rewards */}
+                    <div className="flex flex-col space-y-4">
+                      {/* Missions Section */}
+                      <div className="flex flex-col space-y-4 bg-slate-800/30 p-6 rounded-3xl border border-slate-700/50">
+                        <h3 className="text-xl font-black text-white flex items-center gap-2">
+                          <Trophy size={20} className="text-yellow-400" />
+                          오늘의 미션
+                        </h3>
+                        <div className="space-y-3 overflow-y-auto max-h-[400px] pr-2 custom-scrollbar">
+                          {missions.map(m => (
+                            <div key={m.id} className={`p-4 rounded-2xl border transition-all ${m.completed ? 'bg-green-500/10 border-green-500/30' : 'bg-slate-900/50 border-slate-700'}`}>
+                              <div className="flex justify-between items-start mb-2">
+                                <span className={`font-bold text-sm ${m.completed ? 'text-green-400' : 'text-slate-300'}`}>{m.desc}</span>
+                                {m.completed && (
+                                  <button
+                                    onClick={() => {
+                                      setGold(g => g + m.reward);
+                                      setMissions(prev => prev.filter(mission => mission.id !== m.id));
+                                      setNotification({ message: `보상 획득! +${m.reward} 골드`, color: '#22c55e' });
+                                    }}
+                                    className="bg-green-500 text-slate-950 text-[10px] font-black px-2 py-1 rounded-lg hover:bg-green-400 shadow-lg"
+                                  >
+                                    보상 받기
+                                  </button>
+                                )}
+                              </div>
+                              <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full transition-all duration-500 ${m.completed ? 'bg-green-500' : 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]'}`}
+                                  style={{ width: `${(m.current / m.target) * 100}%` }}
+                                />
+                              </div>
+                              <div className="flex justify-between mt-1">
+                                <span className="text-[10px] text-slate-500 font-bold">{m.current} / {m.target}</span>
+                                <span className="text-[10px] text-yellow-500 font-bold">{m.reward} Gold</span>
+                              </div>
                             </div>
-                            <div className="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
-                              <div 
-                                className={`h-full transition-all duration-500 ${m.completed ? 'bg-green-500' : 'bg-blue-500 shadow-[0_0_10px_rgba(59,130,246,0.5)]'}`}
-                                style={{ width: `${(m.current / m.target) * 100}%` }}
-                              />
+                          ))}
+                          {missions.length === 0 && (
+                            <div className="text-center py-10 text-slate-500 font-bold italic">모든 미션을 완료했습니다!</div>
+                          )}
+                          {missions.length > 0 && missions.every(m => m.completed) && (
+                            <div className="mt-4 p-4 bg-yellow-500/20 border-2 border-yellow-500 rounded-2xl flex flex-col items-center gap-3">
+                              <span className="text-yellow-400 font-black text-center">🎉 모든 오늘의 미션 완료! 🎉</span>
+                              <button
+                                onClick={() => {
+                                  const bonusReward = 500;
+                                  setGold(g => g + bonusReward);
+                                  setMissions([]);
+                                  setHasClaimedDailyBonus(true);
+                                  saveToServer({ gold: gold + bonusReward, missions: [], hasClaimedDailyBonus: true });
+                                  setNotification({ message: `최종 보상 획득! +${bonusReward} 골드`, color: '#facc15' });
+                                }}
+                                className="w-full bg-yellow-500 hover:bg-yellow-400 text-slate-900 font-black py-2 rounded-xl shadow-lg transition-transform active:scale-95"
+                              >
+                                최종 보상 받기 (500G)
+                              </button>
                             </div>
-                            <div className="flex justify-between mt-1">
-                              <span className="text-[10px] text-slate-500 font-bold">{m.current} / {m.target}</span>
-                              <span className="text-[10px] text-yellow-500 font-bold">{m.reward} Gold</span>
-                            </div>
-                          </div>
-                        ))}
-                        {missions.length === 0 && (
-                          <div className="text-center py-10 text-slate-500 font-bold italic">모든 미션을 완료했습니다!</div>
-                        )}
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Trophy Road Section */}
+                      <div className="flex flex-col space-y-4 bg-slate-800/30 p-6 rounded-3xl border border-slate-700/50">
+                        <h3 className="text-xl font-black text-white flex items-center gap-2">
+                          <Trophy size={20} className="text-blue-400" />
+                          트로피 보상 (Trophy Road)
+                        </h3>
+                        <div className="space-y-3 overflow-y-auto max-h-[300px] pr-2 custom-scrollbar">
+                          {trophyMilestones.map(m => {
+                            const isClaimed = claimedTrophyRewards.includes(m.trophies);
+                            const canClaim = trophies >= m.trophies && !isClaimed;
+                            return (
+                              <div key={m.trophies} className={`p-4 rounded-2xl border flex justify-between items-center ${isClaimed ? 'bg-slate-800/20 border-slate-800 opacity-50' : canClaim ? 'bg-blue-500/10 border-blue-500' : 'bg-slate-900 border-slate-700'}`}>
+                                <div className="flex flex-col">
+                                  <span className="text-white font-bold text-sm">{m.trophies} 트로피 달성</span>
+                                  <span className="text-yellow-500 text-xs font-black">{m.label}</span>
+                                </div>
+                                {isClaimed ? (
+                                  <span className="text-slate-500 text-xs font-bold">수령 완료</span>
+                                ) : (
+                                  <button
+                                    onClick={() => claimTrophyReward(m.trophies, m.reward)}
+                                    disabled={!canClaim}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${canClaim ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-lg' : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
+                                  >
+                                    {canClaim ? '보상 받기' : '잠김'}
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1127,17 +1340,24 @@ export default function GameCanvas() {
 
               {activeTab === 'DECK' && (
                 <div>
-                  <div className="flex justify-between items-end mb-4">
-                    <h2 className="text-xl font-bold text-white">보유한 카드</h2>
-                    <span className={`font-bold ${selectedDeck.length === 6 ? 'text-green-400' : 'text-red-400'}`}>
-                      선택됨: {selectedDeck.length} / 6
-                    </span>
+                  <div className="flex justify-between items-center mb-6">
+                    <div>
+                      <h2 className="text-3xl font-black text-white">카드 보관함</h2>
+                      <p className="text-slate-500 text-sm">전투에 사용할 6개의 카드를 선택하세요.</p>
+                    </div>
+                    <div className="flex flex-col items-end">
+                      <div className={`px-5 py-2 rounded-2xl text-base font-black border-2 flex items-center gap-3 shadow-lg ${selectedDeck.length === 6 ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 'bg-red-500/10 border-red-500 text-red-400'}`}>
+                        <Swords size={20} />
+                        <span>전투 덱 {selectedDeck.length} / 6</span>
+                      </div>
+                      <p className="text-slate-500 text-[10px] mt-1 font-bold">6개의 카드를 선택해야 전투를 시작할 수 있습니다.</p>
+                    </div>
                   </div>
-                  
+
                   {['legendary', 'epic', 'rare', 'common'].map(rarity => {
-                    const cardsOfRarity = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === rarity);
+                    const cardsOfRarity = (Object.values(CARDS) as CardDef[]).filter(c => c.rarity === rarity);
                     if (cardsOfRarity.length === 0) return null;
-                    
+
                     let rarityColorText = 'text-slate-400';
                     if (rarity === 'rare') rarityColorText = 'text-blue-400';
                     if (rarity === 'epic') rarityColorText = 'text-purple-500';
@@ -1152,59 +1372,78 @@ export default function GameCanvas() {
                             const isSelected = selectedDeck.includes(card.id);
                             const level = cardLevels[card.id] || 1;
                             const upgradeCost = level * 50;
-                            
+
                             let rarityColor = 'border-slate-500';
                             if (card.rarity === 'rare') rarityColor = 'border-blue-400';
                             if (card.rarity === 'epic') rarityColor = 'border-purple-500';
                             if (card.rarity === 'legendary') rarityColor = 'border-yellow-400';
 
                             return (
-                              <div key={card.id} className={`relative flex flex-col items-center p-1 sm:p-2 rounded-xl border-2 transition-all ${!isUnlocked ? 'opacity-40 grayscale border-slate-800 bg-slate-900' : isSelected ? `bg-slate-800 ${rarityColor} shadow-[0_0_10px_rgba(255,255,255,0.1)] ring-2 ring-blue-500/50` : `bg-slate-900 ${rarityColor} hover:bg-slate-800`}`}>
+                              <motion.div
+                                key={card.id}
+                                initial={{ opacity: 0, y: 10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                className={`relative flex flex-col items-center p-2 rounded-2xl border-2 transition-all cursor-pointer group ${!isUnlocked
+                                  ? 'opacity-40 grayscale border-slate-800 bg-slate-900/50'
+                                  : isSelected
+                                    ? `bg-slate-800 ${rarityColor} shadow-[0_0_20px_rgba(59,130,246,0.3)] ring-2 ring-blue-500/50 scale-105 z-10`
+                                    : `bg-slate-900 ${rarityColor} hover:bg-slate-800 hover:scale-105`
+                                  }`}
+                                onClick={() => isUnlocked && toggleCardSelection(card.id)}
+                              >
                                 {isSelected && (
-                                  <div className="absolute -top-2 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[7px] sm:text-[8px] font-black px-1.5 py-0.5 rounded-full z-10 shadow-lg border border-white/20">
-                                    장착됨
+                                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[10px] font-black px-3 py-1 rounded-full z-20 shadow-xl border-2 border-slate-900 flex items-center gap-1">
+                                    <Target size={12} />
+                                    <span>선택됨</span>
                                   </div>
                                 )}
-                                <button 
-                                  className="w-full flex flex-col items-center"
-                                  onClick={() => isUnlocked && toggleCardSelection(card.id)}
-                                  disabled={!isUnlocked}
-                                >
-                                  <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full flex items-center justify-center mb-0.5 sm:mb-1" style={{ backgroundColor: card.color }}>
-                                    {React.cloneElement(getCardIcon(card.id) as React.ReactElement, { size: 14 })}
+
+                                <div className="w-full flex flex-col items-center">
+                                  <div className="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center mb-2 shadow-2xl relative" style={{ backgroundColor: card.color }}>
+                                    {React.cloneElement(getCardIcon(card.id) as React.ReactElement, { size: 32 })}
+                                    {isSelected && (
+                                      <div className="absolute -bottom-1 -right-1 bg-green-500 text-white rounded-full p-1 shadow-lg border-2 border-slate-900">
+                                        <Plus size={10} className="rotate-45" />
+                                      </div>
+                                    )}
                                   </div>
-                                  <span className="text-white text-[8px] sm:text-xs font-bold mb-0.5 sm:mb-1 truncate w-full text-center">{card.name}</span>
-                                  <div className="absolute top-0.5 right-0.5 bg-blue-600 w-3.5 h-3.5 rounded-full flex items-center justify-center text-[7px] font-bold text-white border border-slate-900">
+
+                                  <span className="text-white text-xs sm:text-sm font-black mb-1 truncate w-full text-center px-1">
+                                    {card.name}
+                                  </span>
+
+                                  <div className="absolute top-2 right-2 bg-slate-900/80 backdrop-blur-md w-6 h-6 rounded-lg flex items-center justify-center text-[10px] font-black text-blue-400 border border-slate-700 shadow-lg">
                                     {card.cost}
                                   </div>
+
                                   {isUnlocked && (
-                                    <div className="absolute -bottom-1 bg-yellow-500 px-1 rounded-full text-[7px] sm:text-[8px] font-bold text-slate-900">
+                                    <div className="mt-1 bg-yellow-500 px-3 py-0.5 rounded-full text-[10px] font-black text-slate-900 shadow-sm">
                                       Lv.{level}
                                     </div>
                                   )}
-                                </button>
-                                
-                                {isUnlocked && (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      if (gold >= upgradeCost) {
-                                        const newL = { ...cardLevels, [card.id]: level + 1 };
-                                        setCardLevels(newL);
-                                        setGold(g => {
-                                          const newG = g - upgradeCost;
-                                          saveToServer({ trophies, gold: newG, cardLevels: newL, unlockedCards, selectedDeck, fragments });
-                                          return newG;
-                                        });
-                                      }
-                                    }}
-                                    disabled={gold < upgradeCost}
-                                    className={`mt-1.5 w-full py-0.5 rounded-lg text-[7px] sm:text-[8px] font-bold transition-colors ${gold >= upgradeCost ? 'bg-green-600 text-white hover:bg-green-500' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
-                                  >
-                                    ⬆️ {upgradeCost}
-                                  </button>
-                                )}
-                              </div>
+
+                                  {isUnlocked && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (gold >= upgradeCost) {
+                                          const newL = { ...cardLevels, [card.id]: level + 1 };
+                                          setCardLevels(newL);
+                                          setGold(g => {
+                                            const newG = g - upgradeCost;
+                                            saveToServer({ gold: newG, cardLevels: newL });
+                                            return newG;
+                                          });
+                                        }
+                                      }}
+                                      disabled={gold < upgradeCost}
+                                      className={`mt-2 w-full py-1 rounded-lg text-[10px] font-black transition-colors ${gold >= upgradeCost ? 'bg-green-600 text-white hover:bg-green-500 shadow-sm' : 'bg-slate-800 text-slate-500 cursor-not-allowed'}`}
+                                    >
+                                      강화 {upgradeCost}G
+                                    </button>
+                                  )}
+                                </div>
+                              </motion.div>
                             );
                           })}
                         </div>
@@ -1215,277 +1454,218 @@ export default function GameCanvas() {
               )}
 
               {activeTab === 'SHOP' && (
-                <div className="flex-1 overflow-y-auto p-4 sm:p-8">
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* Gacha Section */}
-                    <div className="bg-slate-800/30 p-8 rounded-3xl border border-slate-700/50 flex flex-col items-center text-center">
-                      <h2 className="text-3xl font-black text-white mb-2">카드 뽑기</h2>
-                      <p className="text-slate-400 mb-8">새로운 카드를 획득하세요!</p>
-                      
-                      <div className="relative mb-8">
-                        <div className="absolute -inset-4 bg-yellow-500/10 blur-2xl rounded-full" />
-                        <div className="w-32 h-32 bg-slate-800 rounded-3xl border-4 border-yellow-500/50 flex items-center justify-center text-6xl shadow-2xl">
+                <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8">
+                  {/* Gacha Section */}
+                  <div className="bg-slate-800/30 p-10 rounded-[3rem] border border-slate-700/50 flex flex-col items-center text-center w-full shadow-2xl relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-64 h-64 bg-blue-500/5 blur-[100px] -z-10" />
+                    <div className="absolute bottom-0 left-0 w-64 h-64 bg-purple-500/5 blur-[100px] -z-10" />
+                    
+                    <h2 className="text-4xl font-black text-white mb-2 tracking-tighter">카드 소환</h2>
+                    <p className="text-slate-400 mb-10 max-w-md">강력한 전설 카드를 획득하여 당신의 덱을 무적의 군단으로 만드세요!</p>
+                    
+                    <div className="relative mb-12">
+                      <motion.div 
+                        animate={{ y: [0, -15, 0] }}
+                        transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
+                        className="relative z-10"
+                      >
+                        <div className="w-48 h-48 bg-gradient-to-br from-slate-800 to-slate-900 rounded-[2.5rem] border-4 border-slate-700/50 flex items-center justify-center text-8xl shadow-[0_30px_60px_-15px_rgba(0,0,0,0.5)] relative overflow-hidden group">
+                          <div className="absolute inset-0 bg-gradient-to-t from-blue-600/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                           🎁
                         </div>
-                      </div>
-
-                      <button
-                        onClick={() => {
-                          if (gold >= 100) {
-                            const newGold = gold - 100;
-                            setGold(newGold);
-                            
-                            const rand = Math.random();
-                            let targetRarity: 'common' | 'rare' | 'epic' | 'legendary' = 'common';
-                            if (rand > 0.95) targetRarity = 'legendary';
-                            else if (rand > 0.8) targetRarity = 'epic';
-                            else if (rand > 0.5) targetRarity = 'rare';
-
-                            const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === targetRarity);
-                            const drawn = pool[Math.floor(Math.random() * pool.length)];
-                            
-                            const isNew = !unlockedCards.includes(drawn.id);
-                            if (isNew) {
-                              setUnlockedCards(prev => {
-                                const newU = [...prev, drawn.id];
-                                saveToServer({ trophies, gold: newGold, cardLevels, unlockedCards: newU, selectedDeck, fragments, level, xp, missions });
-                                return newU;
-                              });
-                            } else {
-                              setFragments(prev => {
-                                const newF = { ...prev, [drawn.rarity]: (prev[drawn.rarity] || 0) + 1 };
-                                saveToServer({ trophies, gold: newGold, cardLevels, unlockedCards, selectedDeck, fragments: newF, level, xp, missions });
-                                return newF;
-                              });
-                            }
-                            
-                            setGachaResult({ cardId: drawn.id, isNew });
-                            updateMission('gacha', 1);
-                          }
-                        }}
-                        disabled={gold < 100}
-                        className={`w-full py-4 rounded-xl font-black text-xl transition-all flex items-center justify-center gap-2 ${gold >= 100 ? 'bg-yellow-500 text-slate-900 hover:bg-yellow-400 shadow-[0_0_20px_rgba(234,179,8,0.4)]' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                      >
-                        <span>뽑기</span>
-                        <span className="bg-slate-900 text-yellow-500 px-2 py-1 rounded-lg text-sm">100 G</span>
-                      </button>
-
-                      {gachaResult && !gachaResult.isSynthesis && cardsDef[gachaResult.cardId] && (
-                        <div className="mt-8 p-6 bg-slate-900 rounded-2xl border border-slate-700 animate-in fade-in zoom-in duration-300 w-full">
-                          <h3 className="text-yellow-400 font-bold mb-4">
-                            {gachaResult.isNew ? '✨ 새로운 카드 획득! ✨' : `중복 카드 (${cardsDef[gachaResult.cardId].rarity.toUpperCase()} 조각 1개 획득)`}
-                          </h3>
-                          <div className="flex flex-col items-center">
-                            <div className="w-20 h-20 rounded-full flex items-center justify-center mb-4 shadow-lg" style={{ backgroundColor: cardsDef[gachaResult.cardId].color }}>
-                              {React.cloneElement(getCardIcon(gachaResult.cardId) as React.ReactElement, { size: 32 })}
-                            </div>
-                            <span className="text-2xl font-black text-white">{cardsDef[gachaResult.cardId].name}</span>
-                            <span className="text-slate-400 uppercase mt-1 text-sm font-bold tracking-widest">{cardsDef[gachaResult.cardId].rarity}</span>
-                          </div>
-                        </div>
-                      )}
+                      </motion.div>
+                      <div className="absolute -inset-10 bg-blue-500/10 blur-[60px] rounded-full -z-10 animate-pulse" />
                     </div>
 
-                    {/* Daily Deals Section */}
-                    <div className="bg-slate-800/30 p-8 rounded-3xl border border-slate-700/50">
-                      <h2 className="text-2xl font-black text-white mb-6 flex items-center gap-2">
-                        <Coins className="text-yellow-400" size={24} />
-                        오늘의 상점
-                      </h2>
-                      <div className="grid grid-cols-1 gap-4">
-                        {['knight', 'archer', 'giant'].map(id => {
-                          const card = cardsDef[id];
-                          if (!card) return null;
-                          const isUnlocked = unlockedCards.includes(id);
-                          const price = card.rarity === 'legendary' ? 2000 : card.rarity === 'epic' ? 1000 : card.rarity === 'rare' ? 500 : 200;
+                    <div className="flex flex-col sm:flex-row gap-6 w-full max-w-2xl">
+                      <button
+                        onClick={() => handleGacha(1)}
+                        disabled={gold < 100}
+                        className={`flex-1 group relative px-8 py-6 rounded-[2rem] font-black text-2xl transition-all active:scale-95 shadow-xl border-2
+                          ${gold >= 100 ? 'bg-slate-800 border-slate-700 hover:border-blue-500 hover:bg-slate-700 text-white' : 'bg-slate-900 border-slate-800 text-slate-600 disabled:opacity-50'}
+                        `}
+                      >
+                        <div className="flex flex-col items-center">
+                          <span>1회 소환</span>
+                          <div className="flex items-center gap-2 text-yellow-500 text-sm mt-2 bg-slate-950/50 px-3 py-1 rounded-full">
+                            <Coins size={16} /> 100
+                          </div>
+                        </div>
+                      </button>
+
+                      <button
+                        onClick={() => handleGacha(10)}
+                        disabled={gold < 900}
+                        className={`flex-1 group relative px-8 py-6 rounded-[2rem] font-black text-2xl transition-all active:scale-95 shadow-2xl border-2
+                          ${gold >= 900 ? 'bg-gradient-to-br from-blue-600 to-blue-500 border-blue-400 text-white hover:shadow-[0_0_40px_rgba(59,130,246,0.5)]' : 'bg-slate-900 border-slate-800 text-slate-600 disabled:opacity-50'}
+                        `}
+                      >
+                        <div className="flex flex-col items-center">
+                          <span>10회 소환</span>
+                          <div className="flex items-center gap-2 text-white/90 text-sm mt-2 bg-blue-950/50 px-3 py-1 rounded-full font-bold">
+                            <Coins size={16} /> 900G
+                          </div>
+                        </div>
+                        <div className="absolute -top-4 -right-4 bg-red-500 text-white text-xs font-black px-3 py-1.5 rounded-2xl shadow-lg border-2 border-slate-900 ring-4 ring-red-500/20">10% 할 인</div>
+                      </button>
+                    </div>
+
+                    <AnimatePresence>
+                      {gachaResult && (
+                        <motion.div 
+                          initial={{ opacity: 0, scale: 0.9, y: 30 }}
+                          animate={{ opacity: 1, scale: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.9, y: 30 }}
+                          className="mt-12 p-8 bg-slate-950/80 backdrop-blur-xl rounded-[2.5rem] border border-slate-700 w-full shadow-inner"
+                        >
+                          <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-xl font-black text-white uppercase tracking-widest text-left">소환 결과</h3>
+                            <button onClick={() => setGachaResult(null)} className="text-slate-500 hover:text-white transition-colors">
+                              <Plus size={24} className="rotate-45" />
+                            </button>
+                          </div>
                           
-                          return (
-                            <div key={id} className="bg-slate-900/50 p-4 rounded-2xl border border-slate-700 flex items-center justify-between">
-                              <div className="flex items-center gap-4">
-                                <div className="w-12 h-12 rounded-full flex items-center justify-center" style={{ backgroundColor: card.color }}>
-                                  {getCardIcon(id)}
-                                </div>
-                                <div>
-                                  <div className="text-white font-bold">{card.name}</div>
-                                  <div className="text-[10px] text-slate-500 uppercase font-black">{card.rarity}</div>
+                          <div className="flex flex-wrap justify-center gap-6 max-h-[250px] overflow-y-auto p-4 custom-scrollbar">
+                            {Array.isArray(gachaResult) ? (
+                              gachaResult.map((res: any, i: number) => {
+                                const card = CARDS[res.cardId];
+                                return (
+                                  <motion.div 
+                                    key={i} 
+                                    initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: i * 0.05 }}
+                                    className="flex flex-col items-center group/card"
+                                  >
+                                    <div className={`w-16 h-16 sm:w-20 sm:h-20 rounded-2xl border-2 flex items-center justify-center bg-slate-900 relative transition-all group-hover/card:scale-110 ${res.isNew ? 'border-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.3)] bg-yellow-500/5' : 'border-slate-800'}`}>
+                                      {React.cloneElement(getCardIcon(res.cardId) as React.ReactElement, { size: 32 })}
+                                      {res.isNew && <div className="absolute -top-1.5 -right-1.5 bg-yellow-500 text-slate-900 text-[8px] font-black px-1.5 py-0.5 rounded-full ring-2 ring-slate-950">NEW</div>}
+                                    </div>
+                                    <span className="text-[10px] mt-2 font-black text-slate-400 group-hover/card:text-white transition-colors uppercase">{card?.name}</span>
+                                  </motion.div>
+                                );
+                              })
+                            ) : (
+                              <div className="flex flex-col items-center py-4">
+                                <motion.div animate={{ scale: [1, 1.1, 1] }} transition={{ repeat: Infinity, duration: 2 }}>
+                                  <div className={`w-28 h-28 rounded-3xl border-4 flex items-center justify-center bg-slate-900 relative ${gachaResult.isNew ? 'border-yellow-500 shadow-[0_0_40px_rgba(234,179,8,0.4)]' : 'border-slate-800'}`}>
+                                    {React.cloneElement(getCardIcon(gachaResult.cardId) as React.ReactElement, { size: 56 })}
+                                  </div>
+                                </motion.div>
+                                <h4 className="text-3xl font-black text-white mt-6 tracking-tight">{CARDS[gachaResult.cardId]?.name}</h4>
+                                <div className="mt-2 px-4 py-1.5 bg-yellow-500 rounded-full text-xs font-black text-slate-900 shadow-lg animate-pulse">
+                                  {gachaResult.isNew ? '✨ 새로운 카드 획득! ✨' : '카드 조각 +1 획득'}
                                 </div>
                               </div>
-                              <button
-                                onClick={() => {
-                                  if (gold >= price && !isUnlocked) {
-                                    setGold(g => g - price);
-                                    setUnlockedCards(prev => {
-                                      const newU = [...prev, id];
-                                      saveToServer({ trophies, gold: gold - price, cardLevels, unlockedCards: newU, selectedDeck, fragments, level, xp, missions });
-                                      return newU;
-                                    });
-                                    setNotification({ message: `${card.name} 카드를 구매했습니다!`, color: '#22c55e' });
-                                  }
-                                }}
-                                disabled={gold < price || isUnlocked}
-                                className={`px-4 py-2 rounded-xl font-black text-sm transition-all ${isUnlocked ? 'bg-slate-800 text-slate-500' : gold >= price ? 'bg-blue-600 text-white hover:bg-blue-500' : 'bg-slate-700 text-slate-500'}`}
-                              >
-                                {isUnlocked ? '보유 중' : `${price} G`}
-                              </button>
-                            </div>
-                          );
-                        })}
+                            )}
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+
+                  {/* Daily Shop Section */}
+                  <div className="bg-slate-800/30 p-10 rounded-[3rem] border border-slate-700/50 shadow-xl">
+                    <div className="flex justify-between items-center mb-8">
+                      <div>
+                        <h2 className="text-3xl font-black text-white flex items-center gap-3">
+                          <Coins className="text-yellow-400" size={32} />
+                          데일리 상점
+                        </h2>
+                        <p className="text-slate-500 text-sm mt-1 font-bold italic">매일 새로운 카드가 당신을 기다립니다!</p>
                       </div>
-                      <p className="text-slate-500 text-[10px] mt-6 text-center italic">상점 품목은 매일 자정에 갱신됩니다.</p>
+                      <button
+                        onClick={refreshShop}
+                        className="bg-slate-900 hover:bg-slate-800 text-blue-400 px-6 py-3 rounded-2xl text-sm font-black border border-slate-700 transition-all flex items-center gap-2 active:scale-95 shadow-lg group"
+                      >
+                        <Loader2 size={18} className="group-hover:rotate-180 transition-transform duration-500" />
+                        새로고침 (-50G)
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      {shopCards.map(id => {
+                        const card = CARDS[id];
+                        if (!card) return null;
+                        const isUnlocked = unlockedCards.includes(id);
+                        const price = card.rarity === 'legendary' ? 2000 : card.rarity === 'epic' ? 1000 : card.rarity === 'rare' ? 500 : 200;
+
+                        return (
+                          <div key={id} className={`group bg-slate-900/40 p-6 rounded-[2rem] border transition-all flex flex-col items-center text-center ${isUnlocked ? 'border-slate-800 opacity-60' : 'border-slate-700 hover:border-blue-500/50 hover:bg-slate-800/60 shadow-lg'}`}>
+                            <div className="w-20 h-20 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110 shadow-2xl relative" style={{ backgroundColor: card.color + '22' }}>
+                              <div className="absolute inset-0 rounded-2xl border-2 border-white/5" />
+                              {React.cloneElement(getCardIcon(id) as React.ReactElement, { size: 40 })}
+                            </div>
+                            <div className="mb-6">
+                              <div className="text-white text-xl font-black tracking-tight">{card.name}</div>
+                              <div className="text-[10px] text-slate-500 uppercase font-black tracking-widest mt-1 px-3 py-1 bg-slate-950/50 rounded-full inline-block">{card.rarity}</div>
+                            </div>
+                            <button
+                              onClick={() => {
+                                if (gold >= price && !isUnlocked) {
+                                  const newGold = gold - price;
+                                  setGold(newGold);
+                                  setUnlockedCards(prev => {
+                                    const newU = [...prev, id];
+                                    saveToServer({ gold: newGold, unlockedCards: newU });
+                                    return newU;
+                                  });
+                                  setNotification({ message: `${card.name} 카드를 구매했습니다!`, color: '#22c55e' });
+                                }
+                              }}
+                              disabled={gold < price || isUnlocked}
+                              className={`w-full py-4 rounded-2xl font-black text-sm transition-all shadow-md ${isUnlocked ? 'bg-slate-950 text-slate-600' : gold >= price ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-blue-500/20' : 'bg-slate-800 text-slate-500'}`}
+                            >
+                              {isUnlocked ? '보유 중' : `${price} G`}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
               )}
 
               {activeTab === 'SYNTHESIS' && (
-                <div className="flex flex-col items-center justify-center h-full">
-                  <h2 className="text-3xl font-black text-white mb-2">카드 조각 합성</h2>
-                  <p className="text-slate-400 mb-8">중복 카드로 얻은 조각 3개를 모아 상위 등급 카드를 획득하세요!</p>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 w-full max-w-4xl mb-8">
-                    {/* Common -> Rare */}
-                    <div className="bg-slate-800 p-6 rounded-2xl border border-slate-600 flex flex-col items-center">
-                      <h3 className="text-xl font-bold text-slate-300 mb-2">일반 조각</h3>
-                      <div className="text-3xl font-black mb-4 text-slate-300">{fragments.common || 0} <span className="text-lg text-slate-500">/ 3</span></div>
-                      <button
-                        onClick={() => {
-                          if ((fragments.common || 0) >= 3) {
-                            const newF = {...fragments, common: fragments.common - 3};
-                            const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'rare');
-                            const drawn = pool[Math.floor(Math.random() * pool.length)];
-                            const isNew = !unlockedCards.includes(drawn.id);
-                            if (isNew) {
-                              setUnlockedCards(prev => { 
-                                const n = [...prev, drawn.id]; 
-                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, selectedDeck, fragments: newF });
-                                return n; 
-                              });
-                            } else {
-                              newF.rare = (newF.rare || 0) + 1;
-                              saveToServer({ trophies, gold, cardLevels, unlockedCards, selectedDeck, fragments: newF });
-                            }
-                            setFragments(newF);
-                            setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
-                          }
-                        }}
-                        disabled={(fragments.common || 0) < 3}
-                        className={`w-full py-3 rounded-xl font-bold transition-all ${fragments.common >= 3 ? 'bg-blue-600 text-white hover:bg-blue-500' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                      >
-                        레어 합성
-                      </button>
-                    </div>
-                    
-                    {/* Rare -> Epic */}
-                    <div className="bg-slate-800 p-6 rounded-2xl border border-blue-900 flex flex-col items-center">
-                      <h3 className="text-xl font-bold text-blue-400 mb-2">레어 조각</h3>
-                      <div className="text-3xl font-black mb-4 text-blue-400">{fragments.rare || 0} <span className="text-lg text-slate-500">/ 3</span></div>
-                      <button
-                        onClick={() => {
-                          if ((fragments.rare || 0) >= 3) {
-                            const newF = {...fragments, rare: fragments.rare - 3};
-                            const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'epic');
-                            const drawn = pool[Math.floor(Math.random() * pool.length)];
-                            const isNew = !unlockedCards.includes(drawn.id);
-                            if (isNew) {
-                              setUnlockedCards(prev => { 
-                                const n = [...prev, drawn.id]; 
-                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, selectedDeck, fragments: newF });
-                                return n; 
-                              });
-                            } else {
-                              newF.epic = (newF.epic || 0) + 1;
-                              saveToServer({ trophies, gold, cardLevels, unlockedCards, selectedDeck, fragments: newF });
-                            }
-                            setFragments(newF);
-                            setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
-                          }
-                        }}
-                        disabled={(fragments.rare || 0) < 3}
-                        className={`w-full py-3 rounded-xl font-bold transition-all ${fragments.rare >= 3 ? 'bg-purple-600 text-white hover:bg-purple-500' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                      >
-                        에픽 합성
-                      </button>
-                    </div>
-                    
-                    {/* Epic -> Legendary */}
-                    <div className="bg-slate-800 p-6 rounded-2xl border border-purple-900 flex flex-col items-center">
-                      <h3 className="text-xl font-bold text-purple-400 mb-2">에픽 조각</h3>
-                      <div className="text-3xl font-black mb-4 text-purple-400">{fragments.epic || 0} <span className="text-lg text-slate-500">/ 3</span></div>
-                      <button
-                        onClick={() => {
-                          if ((fragments.epic || 0) >= 3) {
-                            const newF = {...fragments, epic: fragments.epic - 3};
-                            const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'legendary');
-                            const drawn = pool[Math.floor(Math.random() * pool.length)];
-                            const isNew = !unlockedCards.includes(drawn.id);
-                            if (isNew) {
-                              setUnlockedCards(prev => { 
-                                const n = [...prev, drawn.id]; 
-                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, selectedDeck, fragments: newF });
-                                return n; 
-                              });
-                            } else {
-                              newF.legendary = (newF.legendary || 0) + 1;
-                              saveToServer({ trophies, gold, cardLevels, unlockedCards, selectedDeck, fragments: newF });
-                            }
-                            setFragments(newF);
-                            setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
-                          }
-                        }}
-                        disabled={(fragments.epic || 0) < 3}
-                        className={`w-full py-3 rounded-xl font-bold transition-all ${fragments.epic >= 3 ? 'bg-yellow-500 text-slate-900 hover:bg-yellow-400' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                      >
-                        전설 합성
-                      </button>
-                    </div>
-
-                    {/* Legendary -> Legendary */}
-                    <div className="bg-slate-800 p-6 rounded-2xl border border-yellow-900 flex flex-col items-center">
-                      <h3 className="text-xl font-bold text-yellow-400 mb-2">전설 조각</h3>
-                      <div className="text-3xl font-black mb-4 text-yellow-400">{fragments.legendary || 0} <span className="text-lg text-slate-500">/ 3</span></div>
-                      <button
-                        onClick={() => {
-                          if ((fragments.legendary || 0) >= 3) {
-                            const newF = {...fragments, legendary: fragments.legendary - 3};
-                            const pool = (Object.values(cardsDef) as CardDef[]).filter(c => c.rarity === 'legendary');
-                            const drawn = pool[Math.floor(Math.random() * pool.length)];
-                            const isNew = !unlockedCards.includes(drawn.id);
-                            if (isNew) {
-                              setUnlockedCards(prev => { 
-                                const n = [...prev, drawn.id]; 
-                                saveToServer({ trophies, gold, cardLevels, unlockedCards: n, selectedDeck, fragments: newF });
-                                return n; 
-                              });
-                            } else {
-                              newF.legendary = (newF.legendary || 0) + (newF.legendary || 0) + 1;
-                              saveToServer({ trophies, gold, cardLevels, unlockedCards, selectedDeck, fragments: newF });
-                            }
-                            setFragments(newF);
-                            setGachaResult({ cardId: drawn.id, isNew, isSynthesis: true });
-                          }
-                        }}
-                        disabled={(fragments.legendary || 0) < 3}
-                        className={`w-full py-3 rounded-xl font-bold transition-all ${fragments.legendary >= 3 ? 'bg-yellow-500 text-slate-900 hover:bg-yellow-400' : 'bg-slate-700 text-slate-500 cursor-not-allowed'}`}
-                      >
-                        전설 재합성
-                      </button>
-                    </div>
+                <div className="flex-1 overflow-y-auto p-4 sm:p-8 space-y-8">
+                  <div className="text-center">
+                    <h2 className="text-4xl font-black text-purple-400 mb-2">카드 강화 센터</h2>
+                    <p className="text-slate-400">조각을 사용하여 보유한 무작위 카드의 레벨을 올리세요!</p>
                   </div>
 
-                  {gachaResult && gachaResult.isSynthesis && cardsDef[gachaResult.cardId] && (
-                    <div className="p-6 bg-slate-900 rounded-2xl border border-purple-500 animate-in fade-in zoom-in duration-300">
-                      <h3 className="text-purple-400 font-bold mb-4 text-center">
-                        {gachaResult.isNew ? '✨ 합성 성공! 새로운 카드 획득! ✨' : `합성 결과 중복 (${cardsDef[gachaResult.cardId].rarity.toUpperCase()} 조각 1개 획득)`}
-                      </h3>
-                      <div className="flex flex-col items-center">
-                        <div className="w-20 h-20 rounded-full flex items-center justify-center mb-4" style={{ backgroundColor: cardsDef[gachaResult.cardId].color }}>
-                          {getCardIcon(gachaResult.cardId)}
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    {[
+                      { rarity: 'common', name: '일반', cost: 20, color: 'text-slate-300', border: 'border-slate-700', btn: 'bg-slate-700' },
+                      { rarity: 'rare', name: '희귀', cost: 10, color: 'text-orange-400', border: 'border-orange-900', btn: 'bg-orange-600' },
+                      { rarity: 'epic', name: '영웅', cost: 5, color: 'text-purple-400', border: 'border-purple-900', btn: 'bg-purple-600' },
+                      { rarity: 'legendary', name: '전설', cost: 2, color: 'text-yellow-400', border: 'border-yellow-900', btn: 'bg-yellow-600' }
+                    ].map(type => (
+                      <div key={type.rarity} className={`bg-slate-800/50 p-6 rounded-3xl border ${type.border} flex flex-col items-center shadow-xl backdrop-blur-sm`}>
+                        <h3 className={`text-xl font-black mb-2 ${type.color}`}>{type.name} 조각</h3>
+                        <div className={`text-3xl font-black mb-6 ${type.color}`}>
+                          {fragments[type.rarity] || 0} <span className="text-lg text-slate-500">/ {type.cost}</span>
                         </div>
-                        <span className="text-2xl font-black text-white">{cardsDef[gachaResult.cardId].name}</span>
-                        <span className="text-slate-400 uppercase mt-1">{cardsDef[gachaResult.cardId].rarity}</span>
+                        <button
+                          onClick={() => {
+                            const myPool = unlockedCards.filter(id => CARDS[id] && CARDS[id].rarity === type.rarity);
+                            if (myPool.length === 0) {
+                              setNotification({ message: `${type.name} 등급의 카드를 먼저 획득해야 합니다.`, color: "#ef4444" });
+                              return;
+                            }
+                            const newFragments = { ...fragments, [type.rarity]: (fragments[type.rarity] || 0) - type.cost };
+                            const targetId = myPool[Math.floor(Math.random() * myPool.length)];
+                            const targetCard = CARDS[targetId];
+                            const newLevels = { ...cardLevels, [targetId]: (cardLevels[targetId] || 1) + 1 };
+                            setCardLevels(newLevels);
+                            setFragments(newFragments);
+                            setNotification({ message: `✨ ${targetCard.name} 강화! (Lv.${newLevels[targetId]}) ✨`, color: targetCard.color });
+                            saveToServer({ trophies, gold, cardLevels: newLevels, unlockedCards, selectedDeck, fragments: newFragments });
+                          }}
+                          disabled={(fragments[type.rarity] || 0) < type.cost}
+                          className={`w-full py-4 rounded-2xl font-black transition-all transform active:scale-95 shadow-lg ${(fragments[type.rarity] || 0) >= type.cost ? `${type.btn} text-white hover:brightness-110` : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
+                        >
+                          강화하기
+                        </button>
                       </div>
-                    </div>
-                  )}
+                    ))}
+                  </div>
                 </div>
               )}
 
@@ -1572,7 +1752,7 @@ export default function GameCanvas() {
                               </div>
                             </div>
                             {user.id !== myId && user.status === 'LOBBY' && (
-                              <button 
+                              <button
                                 onClick={() => {
                                   socket?.emit('challengePlayer', user.id);
                                   setNotification({ message: `${user.name}님에게 대전을 신청했습니다.`, color: '#3b82f6' });
@@ -1597,7 +1777,7 @@ export default function GameCanvas() {
                           <Trophy className="text-yellow-400" size={24} />
                           전체 랭킹 (TOP 20)
                         </h2>
-                        <button 
+                        <button
                           onClick={fetchLeaderboard}
                           className="text-xs text-blue-400 hover:text-blue-300 font-bold"
                           disabled={isFetchingLeaderboard}
@@ -1665,7 +1845,7 @@ export default function GameCanvas() {
 
           {/* Bottom Card Deck & Mana */}
           <div className="absolute bottom-0 left-0 w-full bg-gradient-to-t from-slate-950 to-transparent pt-10 sm:pt-20 pb-4 sm:pb-6 px-4 sm:px-6 flex flex-col items-center pointer-events-none z-30">
-            
+
             {/* Cards */}
             <div className="flex gap-1.5 sm:gap-4 mb-3 sm:mb-6 pointer-events-auto overflow-x-auto no-scrollbar max-w-full px-2">
               {me.deck.map(cardId => {
@@ -1673,7 +1853,7 @@ export default function GameCanvas() {
                 if (!card) return null;
                 const canAfford = me.mana >= card.cost;
                 const isSelected = selectedCardId === card.id;
-                
+
                 return (
                   <button
                     key={card.id}
@@ -1687,11 +1867,11 @@ export default function GameCanvas() {
                     <div className="absolute -top-2 -left-2 sm:-top-3 sm:-left-3 w-5 h-5 sm:w-8 sm:h-8 rounded-full bg-blue-600 border-2 border-slate-900 flex items-center justify-center font-black text-white shadow-lg z-10 text-[8px] sm:text-xs">
                       {card.cost}
                     </div>
-                    
+
                     <div className="w-6 h-6 sm:w-10 sm:h-10 rounded-full flex items-center justify-center mt-0.5 sm:mt-2" style={{ backgroundColor: card.color }}>
                       {React.cloneElement(getCardIcon(card.id) as React.ReactElement, { size: 14 })}
                     </div>
-                    
+
                     <div className="text-center">
                       <div className="text-white font-bold text-[8px] sm:text-xs truncate w-full">{card.name}</div>
                       <div className="text-slate-400 text-[6px] sm:text-[9px] uppercase tracking-wider">{card.type}</div>
@@ -1703,7 +1883,7 @@ export default function GameCanvas() {
 
             {/* Mana Bar */}
             <div className="w-full max-w-2xl bg-slate-900 rounded-full h-6 sm:h-8 border-2 sm:border-4 border-slate-800 relative overflow-hidden shadow-2xl pointer-events-auto">
-              <motion.div 
+              <motion.div
                 className="h-full bg-gradient-to-r from-fuchsia-600 to-fuchsia-400 shadow-[0_0_20px_rgba(192,38,211,0.6)]"
                 initial={{ width: 0 }}
                 animate={{ width: `${(me.mana / 10) * 100}%` }}
@@ -1725,7 +1905,7 @@ export default function GameCanvas() {
       {/* Challenge Notification */}
       <AnimatePresence>
         {incomingChallenge && (
-          <motion.div 
+          <motion.div
             initial={{ y: 100, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
             exit={{ y: 100, opacity: 0 }}
@@ -1736,7 +1916,7 @@ export default function GameCanvas() {
               <h3 className="text-xl font-black text-white mb-1">{incomingChallenge.name}님의 도전!</h3>
               <p className="text-slate-400 text-sm mb-6">트로피: {incomingChallenge.trophies} | 대전을 수락하시겠습니까?</p>
               <div className="flex gap-3 w-full">
-                <button 
+                <button
                   onClick={() => {
                     socket?.emit('acceptChallenge', incomingChallenge.id);
                   }}
@@ -1744,7 +1924,7 @@ export default function GameCanvas() {
                 >
                   수락
                 </button>
-                <button 
+                <button
                   onClick={() => {
                     socket?.emit('declineChallenge', incomingChallenge.id);
                     setIncomingChallenge(null);
@@ -1761,7 +1941,7 @@ export default function GameCanvas() {
 
       {/* Game Over Screen */}
       {matchState.status === 'GAMEOVER' && matchResultInfo && (
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           className="absolute inset-0 flex flex-col items-center justify-center bg-black/90 backdrop-blur-md z-[200]"
@@ -1774,12 +1954,12 @@ export default function GameCanvas() {
             >
               <Trophy size={64} className={`mx-auto ${matchResultInfo.result === 'win' ? 'text-yellow-400' : 'text-slate-500'}`} />
             </motion.div>
-            
+
             <h1 className={`text-5xl font-black uppercase tracking-tighter mb-2 
               ${matchResultInfo.result === 'win' ? 'text-yellow-400' : matchResultInfo.result === 'draw' ? 'text-white' : 'text-red-500'}`}>
               {matchResultInfo.result === 'win' ? '승리!' : matchResultInfo.result === 'draw' ? '무승부' : '패배'}
             </h1>
-            
+
             <div className="flex gap-4 mb-8 justify-center">
               <div className="flex flex-col items-center bg-slate-800/50 px-4 py-3 rounded-2xl border border-slate-700 min-w-[100px]">
                 <span className="text-slate-500 font-bold uppercase text-[10px]">트로피</span>
@@ -1795,7 +1975,7 @@ export default function GameCanvas() {
               </div>
             </div>
 
-            <button 
+            <button
               onClick={handleReturnToLobby}
               className="w-full py-4 bg-blue-600 text-white rounded-xl font-black text-xl hover:bg-blue-500 transition-all shadow-lg"
             >
