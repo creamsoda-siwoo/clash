@@ -17,6 +17,30 @@ export interface CardDef {
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
 }
 
+export interface TierInfo {
+  name: string;
+  minTrophies: number;
+  color: string;
+  icon: string;
+}
+
+export const TIERS: TierInfo[] = [
+  { name: '브론즈', minTrophies: 0, color: '#cd7f32', icon: '🥉' },
+  { name: '실버', minTrophies: 500, color: '#c0c0c0', icon: '🥈' },
+  { name: '골드', minTrophies: 1000, color: '#ffd700', icon: '🥇' },
+  { name: '플래티넘', minTrophies: 1500, color: '#e5e4e2', icon: '💎' },
+  { name: '다이아몬드', minTrophies: 2000, color: '#b9f2ff', icon: '🔷' },
+  { name: '마스터', minTrophies: 3000, color: '#ff00ff', icon: '🔮' },
+  { name: '그랜드마스터', minTrophies: 4000, color: '#00ffff', icon: '👑' },
+];
+
+export const getTier = (trophies: number): TierInfo => {
+  for (let i = TIERS.length - 1; i >= 0; i--) {
+    if (trophies >= TIERS[i].minTrophies) return TIERS[i];
+  }
+  return TIERS[0];
+};
+
 export const CARDS: Record<string, CardDef> = {
   knight: { id: 'knight', name: '기사', type: 'unit', cost: 3, hp: 800, dmg: 60, speed: 3, range: 50, atkSpeed: 1000, color: '#94a3b8', rarity: 'common' },
   archer: { id: 'archer', name: '궁수', type: 'unit', cost: 3, hp: 250, dmg: 40, speed: 3, range: 400, atkSpeed: 1000, color: '#4ade80', rarity: 'common' },
@@ -77,5 +101,6 @@ export const CARDS: Record<string, CardDef> = {
   tornado: { id: 'tornado', name: '토네이도', type: 'spell', cost: 3, dmg: 100, radius: 250, color: '#94a3b8', duration: 3000, rarity: 'epic' },
   ram_rider: { id: 'ram_rider', name: '램 라이더', type: 'unit', cost: 5, hp: 1500, dmg: 220, speed: 4, range: 60, atkSpeed: 1100, color: '#7c3aed', rarity: 'legendary' },
   magic_archer: { id: 'magic_archer', name: '매직 아처', type: 'unit', cost: 4, hp: 440, dmg: 100, speed: 2.5, range: 700, atkSpeed: 1100, color: '#ea580c', isAoE: true, rarity: 'legendary' },
-  ice_wizard: { id: 'ice_wizard', name: '얼음 마법사', type: 'unit', cost: 3, hp: 600, dmg: 75, speed: 2.5, range: 450, atkSpeed: 1700, color: '#bae6fd', isAoE: true, rarity: 'legendary' }
+  ice_wizard: { id: 'ice_wizard', name: '얼음 마법사', type: 'unit', cost: 3, hp: 600, dmg: 75, speed: 2.5, range: 450, atkSpeed: 1700, color: '#bae6fd', isAoE: true, rarity: 'legendary' },
+  mega_pekka: { id: 'mega_pekka', name: '메가 페카', type: 'unit', cost: 9, hp: 5000, dmg: 800, speed: 1.2, range: 70, atkSpeed: 2000, color: '#000000', rarity: 'legendary' },
 };

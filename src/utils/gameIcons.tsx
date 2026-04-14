@@ -1,0 +1,51 @@
+import React from 'react';
+import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2, Smile, Users, Coins, LogOut, Book, Award, Info, HelpCircle } from 'lucide-react';
+
+export const getCardIcon = (cardId: string, size = 24) => {
+    switch (cardId) {
+        case 'knight': return <Shield size={size} className="text-slate-900" />;
+        case 'archer': return <Target size={size} className="text-slate-900" />;
+        case 'giant': return <Swords size={size} className="text-slate-900" />;
+        case 'assassin': return <Crosshair size={size} className="text-slate-900" />;
+        case 'valkyrie': return <Swords size={size} className="text-slate-900" />;
+        case 'sniper': return <Target size={size} className="text-slate-900" />;
+        case 'skeletons': return <Skull size={size} className="text-slate-900" />;
+        case 'fireball': return <Flame size={size} className="text-slate-900" />;
+        case 'heal': return <Plus size={size} className="text-slate-900" />;
+        case 'freeze': return <Snowflake size={size} className="text-slate-900" />;
+        case 'rage': return <Flame size={size} className="text-slate-900" />;
+        case 'lightning': return <Zap size={size} className="text-slate-900" />;
+        case 'dragon': return <Flame size={size} className="text-slate-900" />;
+        case 'pekka': return <Shield size={size} className="text-slate-900" />;
+        case 'arrows': return <Target size={size} className="text-slate-900" />;
+        case 'dark_knight': return <Swords size={size} className="text-slate-900" />;
+        case 'ice_golem': return <Snowflake size={size} className="text-slate-900" />;
+        case 'poison': return <Droplets size={size} className="text-slate-900" />;
+        case 'healer': return <Heart size={size} className="text-slate-900" />;
+        case 'vampire': return <Skull size={size} className="text-slate-900" />;
+        case 'mini_pekka': return <Shield size={size} className="text-slate-900" />;
+        case 'barbarians': return <Users size={size} className="text-slate-900" />;
+        case 'witch': return <Zap size={size} className="text-slate-900" />;
+        case 'ice_spirit': return <Snowflake size={size} className="text-blue-300" />;
+        case 'fire_spirit': return <Flame size={size} className="text-orange-500" />;
+        case 'bandit': return <Crosshair size={size} className="text-slate-900" />;
+        case 'giant_skeleton': return <Skull size={size} className="text-slate-900" />;
+        case 'goblins': return <Users size={size} className="text-green-600" />;
+        case 'princess': return <Target size={size} className="text-red-500" />;
+        case 'royal_giant': return <Swords size={size} className="text-yellow-600" />;
+        case 'miner': return <Home size={size} className="text-orange-900" />;
+        case 'rocket': return <Zap size={size} className="text-red-600" />;
+        case 'executioner': return <Swords size={size} className="text-slate-900" />;
+        case 'balloon': return <Skull size={size} className="text-slate-600" />;
+        case 'electro_spirit': return <Zap size={size} className="text-blue-500" />;
+        case 'night_witch': return <Skull size={size} className="text-purple-900" />;
+        case 'inferno_dragon': return <Flame size={size} className="text-green-900" />;
+        case 'zap': return <Zap size={size} className="text-sky-400" />;
+        case 'tornado': return <Loader2 size={size} className="text-slate-400" />;
+        case 'ram_rider': return <Swords size={size} className="text-indigo-900" />;
+        case 'magic_archer': return <Target size={size} className="text-orange-900" />;
+        case 'ice_wizard': return <Snowflake size={size} className="text-blue-300" />;
+        case 'mega_pekka': return <Shield size={size} className="text-black" />;
+        default: return <Swords size={size} className="text-slate-900" />;
+    }
+};
