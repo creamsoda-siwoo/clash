@@ -1,0 +1,18 @@
+{
+  "name": "로얄 클래시 (Royal Clash)",
+  "short_name": "로얄 클래시",
+  "description": "최고의 실시간 카드 배틀 전략 게임",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#3b82f6",
+  "icons": [
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "orientation": "portrait"
+}

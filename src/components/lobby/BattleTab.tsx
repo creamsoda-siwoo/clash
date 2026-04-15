@@ -58,7 +58,7 @@ export const BattleTab: React.FC<BattleTabProps> = ({
                                 return (
                                     <div key={id} className="relative flex flex-col items-center p-4 rounded-2xl border-2 border-blue-500 bg-slate-800 shadow-lg transform transition-transform hover:scale-105">
                                         <div className="w-14 h-14 rounded-full flex items-center justify-center mb-2 shadow-inner" style={{ backgroundColor: card.color }}>
-                                            {React.cloneElement(getCardIcon(card.id) as React.ReactElement, { size: 24 })}
+                                            {React.cloneElement(getCardIcon(card.id) as React.ReactElement<any>, { size: 24 })}
                                         </div>
                                         <span className="text-white text-sm font-black">{card.name}</span>
                                         <div className="absolute -top-3 -right-3 bg-blue-600 w-8 h-8 rounded-full flex items-center justify-center text-sm font-black text-white border-2 border-slate-900 shadow-lg">

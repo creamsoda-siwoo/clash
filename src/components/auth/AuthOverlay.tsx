@@ -45,7 +45,7 @@ export const AuthOverlay: React.FC<AuthOverlayProps> = ({
                         <Trophy size={48} className="text-white" />
                     </div>
                     <h1 className="text-5xl font-black text-white tracking-tighter mb-2 uppercase">
-                        Clash <span className="text-blue-500">Battle</span>
+                        Royal <span className="text-blue-500">Clash</span>
                     </h1>
                     <p className="text-slate-500 font-bold uppercase tracking-widest text-xs">Royal Strategic Warfare</p>
                 </div>

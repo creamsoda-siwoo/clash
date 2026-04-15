@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2, Smile, Users, Coins, LogOut, Book, Award, Info, HelpCircle, ShoppingCart, Dices } from 'lucide-react';
+import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2, Smile, Users, Coins, LogOut, Book, Award, Info, HelpCircle, ShoppingCart, Dices, BookOpen, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
@@ -12,8 +12,9 @@ import { BattleTab } from './lobby/BattleTab';
 import { DeckTab } from './lobby/DeckTab';
 import { ShopTab } from './lobby/ShopTab';
 import { SynthesisTab } from './lobby/SynthesisTab';
-import { PachinkoTab } from './lobby/PachinkoTab';
+import { SummonTab } from './lobby/SummonTab';
 import { UsersTab } from './lobby/UsersTab';
+import { WikiTab } from './lobby/WikiTab';
 import { HUD } from './game/HUD';
 import { GameGuide } from './game/GameGuide';
 import { MatchResult } from './game/MatchResult';
@@ -38,7 +39,8 @@ export default function GameCanvas() {
 
   // Game Persistence State
   const [myId, setMyId] = useState('');
-  const [playerName, setPlayerName] = useState('');
+  const [playerName, setPlayerName] = useState('사령관');
+  const [socketId, setSocketId] = useState<string | null>(null);
   const [gold, setGold] = useState(1000);
   const [trophies, setTrophies] = useState(0);
   const [unlockedCards, setUnlockedCards] = useState<string[]>(['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
@@ -55,7 +57,7 @@ export default function GameCanvas() {
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [isFetchingLeaderboard, setIsFetchingLeaderboard] = useState(false);
   const [showLobby, setShowLobby] = useState(true);
-  const [activeTab, setActiveTab] = useState<'BATTLE' | 'DECK' | 'SHOP' | 'SYNTHESIS' | 'PACHINKO' | 'USERS'>('BATTLE');
+  const [activeTab, setActiveTab] = useState<'BATTLE' | 'DECK' | 'SHOP' | 'SYNTHESIS' | 'SUMMON' | 'USERS' | 'WIKI'>('BATTLE');
   const [showGuide, setShowGuide] = useState(false);
   const [notification, setNotification] = useState<{ message: string, color: string } | null>(null);
 
@@ -82,10 +84,16 @@ export default function GameCanvas() {
   const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [showEmoteMenu, setShowEmoteMenu] = useState(false);
+  const [matchResultInfo, setMatchResultInfo] = useState<{ result: string, trophyChange: number, goldChange: number } | null>(null);
+  const hoverPos = useRef<{ x: number, y: number } | null>(null);
+  const placementEffects = useRef<{ x: number, y: number, life: number }[]>([]);
 
   // Camera State
-  const [cameraY, setCameraY] = useState(0);
+  const [cameraX, setCameraX] = useState(450);
+  const [cameraY, setCameraY] = useState(1300);
+  const [viewScale, setViewScale] = useState(1);
   const isDragging = useRef(false);
+  const lastMouseX = useRef(0);
   const lastMouseY = useRef(0);
 
   useEffect(() => {
@@ -145,12 +153,17 @@ export default function GameCanvas() {
   useEffect(() => {
     if (!isLoggedIn || !myId) return;
 
-    const newSocket = io('http://localhost:3000', {
-      query: { userId: myId, name: playerName }
+    // Socket initialization
+    const newSocket = io(window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : ''), {
+      transports: ['websocket'],
+      upgrade: false
     });
 
+    setSocket(newSocket);
+
     newSocket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('Connected to server, ID:', newSocket.id);
+      setSocketId(newSocket.id || null);
       newSocket.emit('syncSocial', { trophies });
     });
 
@@ -158,33 +171,33 @@ export default function GameCanvas() {
       setPlayers(data.players || {});
       setUnits(data.units || []);
       setProjectiles(data.projectiles || []);
-      setBases(data.bases || []);
-      setTowers(data.towers || []);
       setMatchState(data.matchState || { status: 'LOBBY', winner: '', timeLeft: 180 });
       setEffects(data.effects || []);
+      setBases(data.bases || []);
+      setTowers(data.towers || []);
 
       if (data.matchState?.status === 'PLAYING') {
+        if (showLobby) {
+          setNotification({ message: '배틀 시작!', color: '#3b82f6' });
+          setCameraX(450);
+          setCameraY(800);
+        }
         setShowLobby(false);
         setIsSearching(false);
-      } else if (data.matchState?.status === 'ENDED') {
-        // Logic for auto-saving results handled on server usually, but we check here for UI
       }
     });
 
-    newSocket.on('matchEnded', async (data) => {
-        const isWin = data.winner === myId;
-        const rewardGold = isWin ? 100 : 10;
-        const trophDiff = isWin ? 30 : -10;
-
-        setGold(g => {
-            const newG = g + rewardGold;
-            setTrophies(t => {
-                const newT = Math.max(0, t + trophDiff);
-                saveToServer({ gold: newG, trophies: newT });
-                return newT;
-            });
-            return newG;
+    newSocket.on('matchResult', (data: { result: 'win' | 'lose' | 'draw', trophyChange: number, goldChange: number }) => {
+      setMatchResultInfo(data);
+      setGold(prevGold => {
+        const newGold = prevGold + (data.goldChange || 0);
+        setTrophies(prevTrophy => {
+          const newTrophies = Math.max(0, prevTrophy + (data.trophyChange || 0));
+          saveToServer({ gold: newGold, trophies: newTrophies });
+          return newTrophies;
         });
+        return newGold;
+      });
     });
 
     newSocket.on('socialUpdate', (data) => {
@@ -192,21 +205,24 @@ export default function GameCanvas() {
       setOnlineCount(data.onlineCount || 0);
     });
 
+    newSocket.on('notification', (data) => {
+      setNotification(data);
+    });
+
+    newSocket.on('damageText', (data) => {
+      setFloatingTexts(prev => [...prev, { ...data, id: Math.random().toString(), life: 1.0 }]);
+    });
+
     newSocket.on('emote', (emote) => {
       setEmotes(prev => [...prev, emote]);
       setTimeout(() => setEmotes(prev => prev.filter(e => e.id !== emote.id)), 3000);
     });
 
-    newSocket.on('damageText', (text) => {
-      setFloatingTexts(prev => [...prev, text]);
-      setTimeout(() => setFloatingTexts(prev => prev.filter(ft => ft.id !== text.id)), 1000);
-    });
-
-    setSocket(newSocket);
     return () => {
       newSocket.disconnect();
     };
   }, [isLoggedIn, myId]);
+
 
   useEffect(() => {
     if (activeTab === 'USERS') {
@@ -265,64 +281,108 @@ export default function GameCanvas() {
         setNotification({ message: '전투 덱을 6장 채워주세요!', color: '#ef4444' });
         return;
     }
-    setIsSearching(true);
+    setIsSearching(true); 
+    
     socket?.emit('joinQueue', { 
         name: playerName,
         deck: selectedDeck, 
-        trophies: trophies,
-        cardLevels: cardLevels 
+        trophies,
+        cardLevels,
+        userId: myId
     });
   };
 
   const handleCanvasClick = (e: React.MouseEvent) => {
     // If it was a drag, don't deploy
-    if (Math.abs(e.clientY - lastMouseY.current) > 5) return;
+    const dx = Math.abs(e.clientX - lastMouseX.current);
+    const dy = Math.abs(e.clientY - lastMouseY.current);
+    if (dx > 5 || dy > 5) return;
 
     if (matchState.status !== 'PLAYING' || !selectedCardId || !socket) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top - cameraY;
-    socket.emit('deployCard', { cardId: selectedCardId, x, y });
+    
+    let x = (e.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
+    let y = (e.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
+
+    const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+    if (myTeam === 'red') {
+        x = 900 - x;
+        y = 1600 - y;
+    }
+    
+    // Add local placement effect for immediate feedback
+    placementEffects.current.push({ x, y, life: 1.0 });
+
+    socket.emit('playCard', { cardId: selectedCardId, x, y });
     setSelectedCardId(null);
   };
 
   const handleMouseDown = (e: React.MouseEvent) => {
     isDragging.current = true;
+    lastMouseX.current = e.clientX;
     lastMouseY.current = e.clientY;
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      let x = (e.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
+      let y = (e.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
+      
+      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+      if (myTeam === 'red') {
+          x = 900 - x;
+          y = 1600 - y;
+      }
+      hoverPos.current = { x, y };
+    }
+
     if (!isDragging.current) return;
+    const dx = e.clientX - lastMouseX.current;
     const dy = e.clientY - lastMouseY.current;
-    setCameraY(prev => {
-        const next = prev + dy;
-        // Limit scroll (Map is 1600x900)
-        return Math.min(0, Math.max(next, window.innerHeight - 900));
-    });
+    
+    setCameraX(prev => Math.max(0, Math.min(900, prev - dx / viewScale)));
+    setCameraY(prev => Math.max(0, Math.min(1600, prev - dy / viewScale)));
+
+    lastMouseX.current = e.clientX;
     lastMouseY.current = e.clientY;
   };
 
   const handleWheel = (e: React.WheelEvent) => {
-    setCameraY(prev => {
-        const next = prev - e.deltaY;
-        return Math.min(0, Math.max(next, window.innerHeight - 900));
-    });
+    setCameraY(prev => Math.max(0, Math.min(1600, prev + e.deltaY)));
   };
 
   const handleTouchStart = (e: React.TouchEvent) => {
     isDragging.current = true;
+    lastMouseX.current = e.touches[0].clientX;
     lastMouseY.current = e.touches[0].clientY;
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
+    const touch = e.touches[0];
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (rect) {
+      let x = (touch.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
+      let y = (touch.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
+      
+      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+      if (myTeam === 'red') {
+          x = 900 - x;
+          y = 1600 - y;
+      }
+      hoverPos.current = { x, y };
+    }
+
     if (!isDragging.current) return;
-    const dy = e.touches[0].clientY - lastMouseY.current;
-    setCameraY(prev => {
-        const next = prev + dy;
-        return Math.min(0, Math.max(next, window.innerHeight - 900));
-    });
-    lastMouseY.current = e.touches[0].clientY;
+    const dx = touch.clientX - lastMouseX.current;
+    const dy = touch.clientY - lastMouseY.current;
+
+    setCameraX(prev => Math.max(0, Math.min(900, prev - dx / viewScale)));
+    setCameraY(prev => Math.max(0, Math.min(1600, prev - dy / viewScale)));
+
+    lastMouseX.current = touch.clientX;
+    lastMouseY.current = touch.clientY;
   };
 
   const handleGacha = (count: number) => {
@@ -357,9 +417,17 @@ export default function GameCanvas() {
   };
 
   const refreshShop = () => {
+     if (gold < 50) {
+         setNotification({ message: '골드가 부족합니다!', color: '#ef4444' });
+         return;
+     }
+     const newGold = gold - 50;
+     setGold(newGold);
      const all = Object.keys(CARDS);
      const shuffled = [...all].sort(() => 0.5 - Math.random());
-     setShopCards(shuffled.slice(0, 3));
+     const newShop = shuffled.slice(0, 3);
+     setShopCards(newShop);
+     saveToServer({ gold: newGold });
   };
 
   const claimTrophyReward = (trophyReq: number, reward: number) => {
@@ -386,76 +454,230 @@ export default function GameCanvas() {
 
     let animReq: number;
     const render = () => {
-      // Resize
       if (canvas.width !== window.innerWidth || canvas.height !== window.innerHeight) {
         canvas.width = window.innerWidth;
         canvas.height = window.innerHeight;
       }
 
+      const scale = Math.min(window.innerWidth / 900, window.innerHeight / 1600);
+      setViewScale(scale);
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       
       ctx.save();
-      ctx.translate(0, cameraY);
+      // Center and scale
+      ctx.translate(canvas.width/2, canvas.height/2);
+      ctx.scale(scale, scale);
+      
+      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+      if (myTeam === 'red') {
+          ctx.rotate(Math.PI);
+      }
+      
+      ctx.translate(-cameraX, -cameraY);
 
-      // Background / Arena
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Full background to avoid black void
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(-window.innerWidth, -window.innerHeight, window.innerWidth * 2, window.innerHeight * 2);
+
+      // Grass/Ground (World bounds)
+      ctx.fillStyle = matchState.theme === 'LAVA' ? '#450a0a' : 
+                      matchState.theme === 'ICE' ? '#0f172a' : 
+                      matchState.theme === 'FOREST' ? '#064e3b' : '#0f171c';
+      ctx.fillRect(0, 0, 900, 1600);
+
+      // Grid Pattern
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 900; i += 50) {
+        ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 1600); ctx.stroke();
+      }
+      for (let j = 0; j <= 1600; j += 50) {
+        ctx.beginPath(); ctx.moveTo(0, j); ctx.lineTo(900, j); ctx.stroke();
+      }
+
+      // River (Horizontal)
+      ctx.fillStyle = '#1e40af';
+      ctx.fillRect(0, 750, 900, 100);
+
+      // Bridges (Vertical orientation on horizontal river)
+      ctx.fillStyle = '#475569';
+      ctx.fillRect(200, 740, 100, 120);
+      ctx.fillRect(600, 740, 100, 120);
+      
+      // Team Zones
+      ctx.fillStyle = 'rgba(239, 68, 68, 0.05)';
+      ctx.fillRect(0, 0, 900, 750);
+      ctx.fillStyle = 'rgba(59, 130, 246, 0.05)';
+      ctx.fillRect(0, 850, 900, 750);
 
       // Render Bases & Towers
       bases.forEach(b => {
-        ctx.fillStyle = b.team === 'red' ? '#ef4444' : '#3b82f6';
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-        ctx.fill();
-        // HP
-        ctx.fillStyle = '#000';
-        ctx.fillRect(b.x - 40, b.y - b.radius - 20, 80, 10);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(b.x - 40, b.y - b.radius - 20, (b.hp / b.maxHp) * 80, 10);
+        const isRed = b.team === 'red';
+        // Base Shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath(); ctx.arc(b.x, b.y + 10, b.radius, 0, Math.PI * 2); ctx.fill();
+        
+        // Base Body
+        const grad = ctx.createRadialGradient(b.x, b.y, 0, b.x, b.y, b.radius);
+        grad.addColorStop(0, isRed ? '#ef4444' : '#3b82f6');
+        grad.addColorStop(1, isRed ? '#991b1b' : '#1e3a8a');
+        ctx.fillStyle = grad;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2); ctx.fill();
+        
+        // Base Rim
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2); ctx.stroke();
+
+        // HP Bar
+        const barW = 120;
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(b.x - barW/2, b.y - b.radius - 30, barW, 12);
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(b.x - barW/2 + 2, b.y - b.radius - 28, (b.hp / b.maxHp) * (barW - 4), 8);
+        
+        // HP Text - Keep upright
+        ctx.save();
+        ctx.translate(b.x, b.y - b.radius - 35);
+        if (myTeam === 'red') ctx.rotate(Math.PI);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`${Math.floor(b.hp)} / ${b.maxHp}`, 0, 0);
+        ctx.restore();
       });
 
       towers.forEach(t => {
-        ctx.fillStyle = t.team === 'red' ? '#f87171' : '#60a5fa';
-        ctx.beginPath();
-        ctx.arc(t.x, t.y, t.radius, 0, Math.PI * 2);
-        ctx.fill();
-        // HP
-        ctx.fillStyle = '#000';
-        ctx.fillRect(t.x - 30, t.y - t.radius - 15, 60, 8);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(t.x - 30, t.y - t.radius - 15, (t.hp / t.maxHp) * 60, 8);
+        if (t.hp <= 0) return;
+        const isRed = t.team === 'red';
+        // Tower Body
+        ctx.fillStyle = isRed ? '#f87171' : '#60a5fa';
+        ctx.beginPath(); ctx.arc(t.x, t.y, t.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        // HP mini bar
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(t.x - 30, t.y - t.radius - 20, 60, 8);
+        ctx.fillStyle = '#10b981';
+        ctx.fillRect(t.x - 28, t.y - t.radius - 18, (t.hp / t.maxHp) * 56, 4);
+
+        // HP Text - Keep upright
+        ctx.save();
+        ctx.translate(t.x, t.y - t.radius - 25);
+        if (myTeam === 'red') ctx.rotate(Math.PI);
+        ctx.fillStyle = 'white';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(Math.floor(t.hp).toString(), 0, 0);
+        ctx.restore();
       });
 
       // Render Units
       units.forEach(u => {
-        const card = CARDS[u.cardId];
-        ctx.fillStyle = u.team === 'red' ? '#dc2626' : '#2563eb';
+        const stats = CARDS[u.cardId];
+        ctx.save();
+        ctx.translate(u.x, u.y);
+        
+        // Glow/Shadow
+        ctx.shadowBlur = 15;
+        ctx.shadowColor = stats?.color || (u.team === 'red' ? '#ef4444' : '#3b82f6');
+        
+        // Body
+        ctx.fillStyle = stats?.color || (u.team === 'red' ? '#ef4444' : '#3b82f6');
         ctx.beginPath();
-        ctx.arc(u.x, u.y, 15, 0, Math.PI * 2);
+        ctx.arc(0, 0, 18, 0, Math.PI * 2);
         ctx.fill();
-        // HP mini bar
-        ctx.fillStyle = '#000';
-        ctx.fillRect(u.x - 15, u.y - 25, 30, 4);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillRect(u.x - 15, u.y - 25, (u.hp / u.maxHp) * 30, 4);
+        
+        ctx.shadowBlur = 0;
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // HP bar
+        const hpPercent = u.hp / u.maxHp;
+        const barWidth = 40;
+        ctx.fillStyle = 'rgba(0,0,0,0.4)';
+        ctx.fillRect(-barWidth/2, -35, barWidth, 5);
+        ctx.fillStyle = hpPercent > 0.5 ? '#10b981' : (hpPercent > 0.2 ? '#f59e0b' : '#ef4444');
+        ctx.fillRect(-barWidth/2, -35, barWidth * hpPercent, 5);
+        
+        ctx.restore();
       });
 
       // Render Projectiles
       projectiles.forEach(p => {
         ctx.fillStyle = '#facc15';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#facc15';
+        ctx.beginPath(); ctx.arc(p.x, p.y, 5, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
       });
 
       // Render Effects
       effects.forEach(e => {
         ctx.strokeStyle = e.color;
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2); ctx.stroke();
+      });
+
+      // Update and Draw Floating Texts
+      if (floatingTexts.length > 0) {
+          // We must be careful about updating state in render loop, 
+          // but for simple life reduction it's usually okay if batched.
+          floatingTexts.forEach(ft => {
+              ctx.save();
+              ctx.globalAlpha = ft.life;
+              ctx.fillStyle = ft.color || 'white';
+              ctx.font = `bold ${18 + (1 - ft.life) * 10}px Outfit`;
+              ctx.textAlign = 'center';
+              ctx.fillText(ft.amount?.toString() || '', ft.x, ft.y);
+              ctx.restore();
+              
+              // Mutate for next frame (since it's a render loop and ft is an object)
+              ft.life -= 0.02;
+              ft.y -= 1.5;
+          });
+          
+          // One-shot check to clean up
+          if (floatingTexts.some(t => t.life <= 0)) {
+              setTimeout(() => setFloatingTexts(prev => prev.filter(t => t.life > 0)), 0);
+          }
+      }
+
+      // Render Placement Effects
+      placementEffects.current.forEach((pe, i) => {
+        ctx.strokeStyle = `rgba(255, 255, 255, ${pe.life})`;
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+        ctx.arc(pe.x, pe.y, (1 - pe.life) * 100, 0, Math.PI * 2);
         ctx.stroke();
+        pe.life -= 0.05;
       });
+      placementEffects.current = placementEffects.current.filter(pe => pe.life > 0);
+
+      // Render Ghost Preview
+      if (selectedCardId && hoverPos.current) {
+          const card = CARDS[selectedCardId];
+          ctx.globalAlpha = 0.3;
+          ctx.fillStyle = card.color;
+          ctx.beginPath();
+          ctx.arc(hoverPos.current.x, hoverPos.current.y, 20, 0, Math.PI * 2);
+          ctx.fill();
+          
+          if (card.radius) {
+              ctx.strokeStyle = card.color;
+              ctx.lineWidth = 2;
+              ctx.setLineDash([5, 5]);
+              ctx.beginPath();
+              ctx.arc(hoverPos.current.x, hoverPos.current.y, card.radius, 0, Math.PI * 2);
+              ctx.stroke();
+              ctx.setLineDash([]);
+          }
+          ctx.globalAlpha = 1.0;
+      }
 
       ctx.restore();
 
@@ -470,7 +692,7 @@ export default function GameCanvas() {
     return (
       <div className="w-full h-screen bg-slate-950 flex flex-col items-center justify-center text-white">
         <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
-        <p className="text-slate-400 font-medium animate-pulse">커맨더 센터 초기화 중...</p>
+        <p className="text-slate-400 font-medium animate-pulse">로얄 클래시 센터 초기화 중...</p>
       </div>
     );
   }
@@ -501,7 +723,7 @@ export default function GameCanvas() {
   ];
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans select-none">
+    <div className="relative w-full h-full min-h-[100dvh] overflow-hidden bg-slate-950 font-sans select-none">
       <canvas 
         ref={canvasRef} 
         className="block w-full h-full cursor-grab active:cursor-grabbing touch-none" 
@@ -530,8 +752,8 @@ export default function GameCanvas() {
       {/* HUD & Modals */}
       {!showLobby && (
           <HUD 
-            me={players[myId]} 
-            opponent={(Object.values(players) as Player[]).find((p: Player) => p.id !== myId) || null} 
+            me={(players[socketId || ''] as Player) || (Object.values(players) as Player[]).find(p => p.userId === myId || p.id === socketId)} 
+            opponent={(Object.values(players) as Player[]).find(p => p.id !== (socketId || myId)) || null} 
             cardsDef={CARDS} 
             selectedCardId={selectedCardId} 
             setSelectedCardId={setSelectedCardId} 
@@ -539,11 +761,18 @@ export default function GameCanvas() {
           />
       )}
 
-      <MatchResult matchState={matchState} myId={myId} onClose={() => {
-          setShowLobby(true);
-          setMatchState({ status: 'LOBBY', winner: '', timeLeft: 180 });
-          socket?.emit('leaveMatch');
-      }} />
+      {!showLobby && (
+        <MatchResult 
+          matchState={matchState} 
+          myId={myId} 
+          myTeam={(players[socketId || ''] as Player)?.team || ''}
+          onClose={() => {
+            setShowLobby(true);
+            setMatchState({ status: 'LOBBY', winner: '', timeLeft: 180 });
+            socket?.emit('leaveGame');
+          }} 
+        />
+      )}
 
       <GameGuide showGuide={showGuide} setShowGuide={setShowGuide} />
 
@@ -592,8 +821,9 @@ export default function GameCanvas() {
                 { id: 'DECK', label: '덱', icon: <Target size={18} /> },
                 { id: 'SHOP', label: '상점', icon: <ShoppingCart size={18} /> },
                 { id: 'SYNTHESIS', label: '강화', icon: <Zap size={18} /> },
-                { id: 'PACHINKO', label: '빠칭코', icon: <Dices size={18} /> },
-                { id: 'USERS', label: '랭킹', icon: <Users size={18} /> }
+                { id: 'SUMMON', label: '소환', icon: <Sparkles size={18} /> },
+                { id: 'USERS', label: '랭킹', icon: <Users size={18} /> },
+                { id: 'WIKI', label: '백과', icon: <BookOpen size={18} /> }
               ].map(tab => (
                 <button
                   key={tab.id}
@@ -675,20 +905,13 @@ export default function GameCanvas() {
                         selectedDeck={selectedDeck} 
                       />
                   )}
-                  {activeTab === 'PACHINKO' && (
-                      <PachinkoTab 
+                  {activeTab === 'SUMMON' && (
+                      <SummonTab 
                         gold={gold} 
-                        setGold={setGold} 
-                        isSpinning={isSpinning} 
-                        setIsSpinning={setIsSpinning} 
-                        pachinkoResult={pachinkoResult} 
-                        setPachinkoResult={setPachinkoResult} 
-                        saveToServer={saveToServer} 
-                        trophies={trophies} 
-                        cardLevels={cardLevels} 
-                        unlockedCards={unlockedCards} 
-                        selectedDeck={selectedDeck} 
-                        fragments={fragments} 
+                        handleGacha={handleGacha} 
+                        gachaResult={gachaResult} 
+                        setGachaResult={setGachaResult} 
+                        cardsDef={CARDS} 
                       />
                   )}
                   {activeTab === 'USERS' && (
@@ -701,6 +924,9 @@ export default function GameCanvas() {
                           playerName={playerName} 
                           socket={socket} 
                       />
+                  )}
+                  {activeTab === 'WIKI' && (
+                      <WikiTab cardsDef={CARDS} />
                   )}
                </div>
             </div>

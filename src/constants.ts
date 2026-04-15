@@ -15,6 +15,7 @@ export interface CardDef {
   duration?: number;
   targetCount?: number;
   rarity: 'common' | 'rare' | 'epic' | 'legendary';
+  description?: string;
 }
 
 export interface TierInfo {

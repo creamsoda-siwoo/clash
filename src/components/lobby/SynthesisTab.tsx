@@ -47,7 +47,8 @@ export const SynthesisTab: React.FC<SynthesisTabProps> = ({
                         </div>
                         <button
                             onClick={() => {
-                                const myPool = unlockedCards.filter(id => CARDS[id] && CARDS[id].rarity === type.rarity);
+                                const allAvailable = Array.from(new Set([...unlockedCards, ...selectedDeck]));
+                                const myPool = allAvailable.filter(id => CARDS[id] && CARDS[id].rarity === type.rarity);
                                 if (myPool.length === 0) {
                                     setNotification({ message: `${type.name} 등급의 카드를 먼저 획득해야 합니다.`, color: "#ef4444" });
                                     return;

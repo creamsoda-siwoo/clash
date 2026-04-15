@@ -56,8 +56,8 @@ export const DeckTab: React.FC<DeckTabProps> = ({
                         <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 gap-4">
                             {allCardsInRarity.map(id => {
                                 const card = cardsDef[id];
-                                const isUnlocked = unlockedCards.includes(id);
                                 const isSelected = selectedDeck.includes(id);
+                                const isUnlocked = unlockedCards.includes(id) || isSelected;
                                 const level = cardLevels[id] || 1;
                                 const upgradeCost = level * 100;
 
@@ -91,7 +91,7 @@ export const DeckTab: React.FC<DeckTabProps> = ({
                                         )}
                                         <div className="flex flex-col items-center">
                                             <div className="w-16 h-16 rounded-2xl flex items-center justify-center mb-3 shadow-inner relative" style={{ backgroundColor: isUnlocked ? card.color + '33' : '#1e293b' }}>
-                                                {React.cloneElement(getCardIcon(card.id) as React.ReactElement, { size: 32 })}
+                                                {React.cloneElement(getCardIcon(card.id) as React.ReactElement<any>, { size: 32 })}
                                                 {isUnlocked && (
                                                     <div className="absolute -bottom-2 bg-slate-900 border border-slate-700 px-2 py-0.5 rounded-full text-[10px] font-black text-yellow-500">
                                                         Lv.{level}

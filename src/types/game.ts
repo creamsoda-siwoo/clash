@@ -8,6 +8,7 @@ export interface Player {
   hand?: string[]; // Optional for backward compatibility
   nextCard?: string;
   trophies: number;
+  userId?: string;
 }
 
 export interface Unit {
