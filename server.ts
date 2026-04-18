@@ -358,7 +358,7 @@ async function startServer() {
             socket.join(matchId);
             matches.set(matchId, match);
           }
-        }, 3000);
+        }, 0);
       }
     });
 
