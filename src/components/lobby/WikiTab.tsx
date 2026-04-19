@@ -22,7 +22,7 @@ export const WikiTab: React.FC<WikiTabProps> = ({ cardsDef }) => {
                             <div className="w-16 h-16 rounded-2xl flex items-center justify-center shadow-inner" style={{ backgroundColor: card.color + '22' }}>
                                  {(() => {
                                     const icon = getCardIcon(card.id);
-                                    return icon ? React.cloneElement(icon as React.ReactElement, { size: 32, style: { color: card.color } }) : <Zap size={32} />;
+                                    return icon ? React.cloneElement(icon as React.ReactElement<any>, { size: 32, style: { color: card.color } }) : <Zap size={32} />;
                                  })()}
                             </div>
                             <div className="flex flex-col">
