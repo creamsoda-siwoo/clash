@@ -104,4 +104,9 @@ export const CARDS: Record<string, CardDef> = {
   magic_archer: { id: 'magic_archer', name: '매직 아처', type: 'unit', cost: 4, hp: 440, dmg: 100, speed: 2.5, range: 700, atkSpeed: 1100, color: '#ea580c', isAoE: true, rarity: 'legendary' },
   ice_wizard: { id: 'ice_wizard', name: '얼음 마법사', type: 'unit', cost: 3, hp: 600, dmg: 75, speed: 2.5, range: 450, atkSpeed: 1700, color: '#bae6fd', isAoE: true, rarity: 'legendary' },
   mega_pekka: { id: 'mega_pekka', name: '메가 페카', type: 'unit', cost: 9, hp: 5000, dmg: 800, speed: 1.2, range: 70, atkSpeed: 2000, color: '#000000', rarity: 'legendary' },
+  lancer: { id: 'lancer', name: '창기병', type: 'unit', cost: 4, hp: 950, dmg: 140, speed: 4, range: 70, atkSpeed: 1300, color: '#6366f1', rarity: 'rare', description: '긴 창으로 근접 사거리 밖에서도 선공하는 빠른 기병.' },
+  wolf_pack: { id: 'wolf_pack', name: '늑대 무리', type: 'unit', cost: 3, hp: 180, dmg: 70, speed: 5.5, range: 40, atkSpeed: 700, color: '#57534e', count: 3, rarity: 'common', description: '무리를 지어 빠르게 돌진하는 세 마리의 늑대.' },
+  flame_elemental: { id: 'flame_elemental', name: '화염 정령', type: 'unit', cost: 5, hp: 700, dmg: 130, speed: 2.5, range: 250, atkSpeed: 1300, color: '#dc2626', isAoE: true, rarity: 'epic', description: '넓은 범위에 화염구를 날리는 원거리 정령.' },
+  crystal_guardian: { id: 'crystal_guardian', name: '크리스탈 수호자', type: 'unit', cost: 6, hp: 2800, dmg: 100, speed: 1.3, range: 70, atkSpeed: 1600, color: '#22d3ee', rarity: 'epic', description: '단단한 수정 갑옷을 두른 느리지만 튼튼한 수호자.' },
+  acid_rain: { id: 'acid_rain', name: '산성비', type: 'spell', cost: 4, dmg: 350, radius: 220, color: '#84cc16', rarity: 'epic', description: '넓은 지역에 산성 비를 뿌려 적에게 피해를 입힌다.' },
 };

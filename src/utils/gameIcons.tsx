@@ -46,6 +46,11 @@ export const getCardIcon = (cardId: string, size = 24) => {
         case 'magic_archer': return <Target size={size} className="text-orange-900" />;
         case 'ice_wizard': return <Snowflake size={size} className="text-blue-300" />;
         case 'mega_pekka': return <Shield size={size} className="text-black" />;
+        case 'lancer': return <Swords size={size} className="text-indigo-900" />;
+        case 'wolf_pack': return <Users size={size} className="text-stone-700" />;
+        case 'flame_elemental': return <Flame size={size} className="text-red-600" />;
+        case 'crystal_guardian': return <Shield size={size} className="text-cyan-400" />;
+        case 'acid_rain': return <Droplets size={size} className="text-lime-500" />;
         default: return <Swords size={size} className="text-slate-900" />;
     }
 };
