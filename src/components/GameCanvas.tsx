@@ -154,7 +154,11 @@ export default function GameCanvas() {
     if (!isLoggedIn || !myId) return;
 
     // Socket initialization
-    const newSocket = io(window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : ''), {
+    // NEXT_PUBLIC_SOCKET_URL lets the frontend (e.g. deployed on Vercel) point at a
+    // separately hosted always-on game server; falls back to same-origin (e.g. Render).
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ||
+      (window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : ''));
+    const newSocket = io(socketUrl, {
       transports: ['websocket'],
       upgrade: false
     });
