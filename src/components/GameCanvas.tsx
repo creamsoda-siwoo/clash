@@ -1,9 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2, Smile, Users, Coins, LogOut, Book, Award, Info, HelpCircle, ShoppingCart, Dices, BookOpen, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { auth, db } from '../lib/firebase';
-import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { CARDS, CardDef, TIERS, getTier } from '../constants';
 import { MatchController, MatchSnapshot } from '../lib/matchRuntime';
 
@@ -96,60 +94,62 @@ export default function GameCanvas() {
   const lastMouseY = useRef(0);
 
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, async (user) => {
-      if (user) {
-        setMyId(user.uid);
-        const docRef = doc(db, 'users', user.uid);
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const d = snap.data();
-          setPlayerName(d.username || 'Commander');
-          setGold(d.gold ?? 1000);
-          setTrophies(d.trophies ?? 0);
-          setUnlockedCards(d.unlockedCards || ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
-          setSelectedDeck(d.selectedDeck || ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
-          setCardLevels(d.cardLevels || {});
-          setFragments(d.fragments || { common: 0, rare: 0, epic: 0, legendary: 0 });
-          setClaimedTrophyRewards(d.claimedTrophyRewards || []);
-          setHasClaimedDailyBonus(d.hasClaimedDailyBonus || false);
-
-          if (d.missions) {
-             setMissions(d.missions);
-          }
-        } else {
-          const initial = {
-            username: user.displayName || 'Commander',
-            gold: 1000,
-            trophies: 0,
-            unlockedCards: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
-            selectedDeck: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
-            cardLevels: {},
-            fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
-            claimedTrophyRewards: [],
-            hasClaimedDailyBonus: false,
-            missions: [
-                { id: 'm1', desc: '전투에서 1회 승리하기', target: 1, current: 0, reward: 200, completed: false },
-                { id: 'm2', desc: '유닛 10기 소환하기', target: 10, current: 0, reward: 150, completed: false },
-                { id: 'm3', desc: '마법 5회 사용하기', target: 5, current: 0, reward: 100, completed: false },
-            ]
-          };
-          await setDoc(docRef, initial);
-          setPlayerName(initial.username);
+    const loadProfile = async (userId: string, fallbackUsername: string) => {
+      setMyId(userId);
+      const { data: d } = await supabase.from('clash_users').select('*').eq('id', userId).maybeSingle();
+      if (d) {
+        setPlayerName(d.username || 'Commander');
+        setGold(d.gold ?? 1000);
+        setTrophies(d.trophies ?? 0);
+        setUnlockedCards(d.unlocked_cards || ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
+        setSelectedDeck(d.selected_deck || ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
+        setCardLevels(d.card_levels || {});
+        setFragments(d.fragments || { common: 0, rare: 0, epic: 0, legendary: 0 });
+        setClaimedTrophyRewards(d.claimed_trophy_rewards || []);
+        setHasClaimedDailyBonus(d.has_claimed_daily_bonus || false);
+        if (d.missions && d.missions.length) {
+          setMissions(d.missions);
         }
-        setIsLoggedIn(true);
+      } else {
+        const initial = {
+          id: userId,
+          username: fallbackUsername || 'Commander',
+          gold: 1000,
+          trophies: 0,
+          unlocked_cards: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
+          selected_deck: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
+          card_levels: {},
+          fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
+          claimed_trophy_rewards: [],
+          has_claimed_daily_bonus: false,
+          missions: [
+            { id: 'm1', desc: '전투에서 1회 승리하기', target: 1, current: 0, reward: 200, completed: false },
+            { id: 'm2', desc: '유닛 10기 소환하기', target: 10, current: 0, reward: 150, completed: false },
+            { id: 'm3', desc: '마법 5회 사용하기', target: 5, current: 0, reward: 100, completed: false },
+          ],
+        };
+        await supabase.from('clash_users').insert(initial);
+        setPlayerName(initial.username);
+      }
+      setIsLoggedIn(true);
+    };
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        loadProfile(session.user.id, session.user.user_metadata?.username).finally(() => setIsAppReady(true));
       } else {
         setIsLoggedIn(false);
+        setIsAppReady(true);
       }
-      setIsAppReady(true);
     });
 
     // Daily Shop Initialization
     refreshShop();
 
-    return () => unsub();
+    return () => listener.subscription.unsubscribe();
   }, []);
 
-  // Applies a match snapshot (from the local engine or a Firestore relay) to UI state.
+  // Applies a match snapshot (from the local engine or a Supabase Realtime relay) to UI state.
   const applyMatchSnapshot = (data: MatchSnapshot) => {
     setPlayers(data.players || {});
     setUnits(data.units || []);
@@ -180,22 +180,29 @@ export default function GameCanvas() {
     }
   }, [activeTab]);
 
+  // clash_users uses snake_case columns; callers pass the same camelCase keys the
+  // old Firestore documents used (unchanged across the migration), so translate
+  // here rather than touching every caller.
+  const SAVE_KEY_MAP: Record<string, string> = {
+    gold: 'gold', trophies: 'trophies', unlockedCards: 'unlocked_cards', selectedDeck: 'selected_deck',
+    cardLevels: 'card_levels', fragments: 'fragments', claimedTrophyRewards: 'claimed_trophy_rewards',
+    hasClaimedDailyBonus: 'has_claimed_daily_bonus', missions: 'missions', username: 'username',
+  };
   const saveToServer = async (updates: any) => {
     if (!myId) return;
-    try {
-      await setDoc(doc(db, 'users', myId), updates, { merge: true });
-    } catch (e) {
-      console.error("Save failed", e);
-    }
+    const row: any = {};
+    Object.entries(updates).forEach(([k, v]) => { row[SAVE_KEY_MAP[k] || k] = v; });
+    const { error } = await supabase.from('clash_users').update(row).eq('id', myId);
+    if (error) console.error('Save failed', error);
   };
 
   const fetchLeaderboard = async () => {
     setIsFetchingLeaderboard(true);
     try {
-      const q = query(collection(db, 'users'), orderBy('trophies', 'desc'), limit(10));
-      const snap = await getDocs(q);
-      const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-      setLeaderboard(list);
+      const { data } = await supabase.from('clash_users').select('*').order('trophies', { ascending: false }).limit(10);
+      setLeaderboard((data || []).map(d => ({
+        id: d.id, username: d.username, trophies: d.trophies, gold: d.gold,
+      })));
     } finally {
       setIsFetchingLeaderboard(false);
     }
@@ -206,20 +213,27 @@ export default function GameCanvas() {
     setAuthError('');
     try {
       if (authMode === 'LOGIN') {
-        await signInWithEmailAndPassword(auth, email, password);
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
       } else {
-        const cred = await createUserWithEmailAndPassword(auth, email, password);
-        await setDoc(doc(db, 'users', cred.user.uid), { 
-            username, 
-            gold: 1000, 
-            trophies: 0, 
-            unlockedCards: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
-            selectedDeck: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
-            cardLevels: {},
-            fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
-            claimedTrophyRewards: [],
-            hasClaimedDailyBonus: false
+        const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { username } } });
+        if (error) throw error;
+        if (!data.user) throw new Error('회원가입에 실패했습니다.');
+        await supabase.from('clash_users').insert({
+          id: data.user.id,
+          username,
+          gold: 1000,
+          trophies: 0,
+          unlocked_cards: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
+          selected_deck: ['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons'],
+          card_levels: {},
+          fragments: { common: 0, rare: 0, epic: 0, legendary: 0 },
+          claimed_trophy_rewards: [],
+          has_claimed_daily_bonus: false,
         });
+        if (!data.session) {
+          setAuthError('가입 확인 이메일을 보냈습니다. 이메일을 확인한 뒤 로그인해주세요.');
+        }
       }
     } catch (err: any) {
       setAuthError(err.message);
@@ -776,7 +790,7 @@ export default function GameCanvas() {
                 <span className="text-lg font-black text-white">{gold.toLocaleString()}</span>
               </div>
               <button 
-                onClick={() => signOut(auth)} 
+                onClick={() => supabase.auth.signOut()}
                 className="p-3 bg-red-600/10 text-red-500 hover:bg-red-600 hover:text-white rounded-xl transition-all border border-red-600/20 shadow-lg"
               >
                 <LogOut size={20} />

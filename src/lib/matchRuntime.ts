@@ -1,13 +1,13 @@
 // Runs matches entirely in the browser instead of on a Socket.io server.
 // Bot matches never touch the network. PvP matches elect one of the two
-// players' browsers as the "host" (it runs the authoritative simulation) and
-// relay state/actions through Firestore (already used for auth/user data),
-// which is itself a managed always-on service — no server process to run.
-import { db } from './firebase';
-import {
-  collection, doc, addDoc, deleteDoc, onSnapshot, query, where,
-  getDocs, limit, runTransaction, setDoc, updateDoc,
-} from 'firebase/firestore';
+// players' browsers as the "host" (it runs the authoritative simulation).
+// Matchmaking uses a Postgres table (clash_pvp_queue) with an atomic
+// conditional UPDATE to claim a waiting opponent (no transaction needed —
+// Postgres row locking makes the claim race-safe). Live match state/actions
+// are relayed over an ephemeral Supabase Realtime Broadcast channel keyed by
+// the match id, never persisted to a table.
+import type { RealtimeChannel } from '@supabase/supabase-js';
+import { supabase } from './supabase';
 import { CARDS } from '../constants';
 import {
   createMatch, spawnBot, playCardLogic, tickMatch, botThink, rewardForResult,
@@ -54,15 +54,16 @@ export class MatchController {
   private myTeam: 'red' | 'blue' = 'blue';
   private myId = '';
   private isHost = false;
-  private matchDocId: string | null = null;
-  private queueDocId: string | null = null;
+  private matchChannel: RealtimeChannel | null = null;
+  private queueChannel: RealtimeChannel | null = null;
+  private queueRowId: string | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private aiTimer: ReturnType<typeof setInterval> | null = null;
-  private unsubs: (() => void)[] = [];
   private callbacks: MatchCallbacks;
   private ended = false;
   private lastSyncAt = 0;
   private lastRemoteSnapshot: MatchSnapshot | null = null;
+  private opponentId: string | null = null;
 
   constructor(callbacks: MatchCallbacks) { this.callbacks = callbacks; }
 
@@ -90,7 +91,7 @@ export class MatchController {
       if (!this.match) return;
       tickMatch(this.match, this.events);
       this.pushLocalState();
-      if (this.matchDocId) this.syncToFirestore();
+      if (this.matchChannel) this.syncToPeer();
       this.checkLocalGameOver();
     }, TICK_MS);
     this.aiTimer = setInterval(() => {
@@ -105,13 +106,13 @@ export class MatchController {
     this.aiTimer = null;
   }
 
-  private syncToFirestore() {
-    if (!this.match || !this.matchDocId) return;
+  private syncToPeer() {
+    if (!this.match || !this.matchChannel) return;
     const now = Date.now();
     const isFinal = this.match.matchState.status === 'GAMEOVER';
-    if (!isFinal && now - this.lastSyncAt < 90) return; // throttle writes to ~11/s
+    if (!isFinal && now - this.lastSyncAt < 90) return; // throttle broadcasts to ~11/s
     this.lastSyncAt = now;
-    updateDoc(doc(db, 'matches', this.matchDocId), { state: serialize(this.match), updatedAt: now }).catch(() => {});
+    this.matchChannel.send({ type: 'broadcast', event: 'state', payload: serialize(this.match) });
   }
 
   /** Starts a fully local match against an AI opponent. No network involved. */
@@ -131,10 +132,10 @@ export class MatchController {
   }
 
   /**
-   * Tries to pair with another player waiting in the Firestore queue for `waitMs`.
-   * Falls back to a bot match if nobody is found in time, mirroring the old
-   * server's "instant PvP, else bot" behavior. Any Firestore error (offline,
-   * rules not deployed yet, etc.) also falls back to a bot match rather than
+   * Tries to pair with another player waiting in the matchmaking queue for
+   * `waitMs`. Falls back to a bot match if nobody is found in time, mirroring
+   * the old server's "instant PvP, else bot" behavior. Any error (offline,
+   * RLS not set up yet, etc.) also falls back to a bot match rather than
    * failing the join outright.
    */
   async joinQueue(params: JoinParams, waitMs = 1500) {
@@ -144,9 +145,9 @@ export class MatchController {
       if (matched) return;
     } catch (err) {
       console.error('PvP matchmaking failed, falling back to a bot match', err);
-      if (this.queueDocId) {
-        deleteDoc(doc(db, 'pvpQueue', this.queueDocId)).catch(() => {});
-        this.queueDocId = null;
+      if (this.queueRowId) {
+        supabase.from('clash_pvp_queue').delete().eq('id', this.queueRowId).then(() => {});
+        this.queueRowId = null;
       }
     }
     await this.joinBotMatch(params);
@@ -154,122 +155,122 @@ export class MatchController {
 
   /** Returns true if a PvP match was started; false/throws otherwise (caller falls back to a bot match). */
   private async tryJoinPvpQueue(params: JoinParams, waitMs: number): Promise<boolean> {
-    const queueCol = collection(db, 'pvpQueue');
+    const { data: candidates, error: candidatesError } = await supabase
+      .from('clash_pvp_queue').select('*').eq('status', 'waiting').limit(5);
+    if (candidatesError) throw candidatesError;
 
-    const candidates = await getDocs(query(queueCol, where('status', '==', 'waiting'), limit(5)));
-    for (const d of candidates.docs) {
-      const data = d.data();
-      if (data.uid === this.myId) continue;
-      let matchId: string | null = null;
-      try {
-        matchId = await runTransaction(db, async (tx) => {
-          const fresh = await tx.get(d.ref);
-          if (!fresh.exists() || fresh.data()?.status !== 'waiting') throw new Error('taken');
-          const mId = 'match_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-          tx.update(d.ref, { status: 'matched', matchId: mId });
-          return mId;
-        });
-      } catch {
-        continue; // someone else claimed this entry first, try the next candidate
-      }
-      if (!matchId) continue;
+    for (const row of candidates || []) {
+      if (row.uid === this.myId) continue;
+      const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      // Atomic claim: only succeeds if nobody else claimed this row first.
+      const { data: claimed } = await supabase
+        .from('clash_pvp_queue')
+        .update({ status: 'matched', match_id: matchId })
+        .eq('id', row.id).eq('status', 'waiting')
+        .select().maybeSingle();
+      if (!claimed) continue; // someone else claimed it first, try the next candidate
 
       this.isHost = true;
       this.myTeam = 'blue';
-      this.matchDocId = matchId;
+      this.opponentId = row.uid;
       const match = createMatch(matchId, true);
-      match.players[data.uid] = {
-        id: data.uid, team: 'red', name: data.name, mana: 5, isBot: false,
-        deck: data.deck, trophies: data.trophies, cardLevels: data.cardLevels, userId: data.uid,
+      match.players[row.uid] = {
+        id: row.uid, team: 'red', name: row.name, mana: 5, isBot: false,
+        deck: row.deck, trophies: row.trophies, cardLevels: row.card_levels, userId: row.uid,
       };
       match.players[params.myId] = {
         id: params.myId, team: 'blue', name: params.name, mana: 5, isBot: false,
         deck: params.deck, trophies: params.trophies, cardLevels: params.cardLevels, userId: params.myId,
       };
       this.match = match;
-      await setDoc(doc(db, 'matches', matchId), { state: serialize(match), updatedAt: Date.now(), hostId: params.myId, guestId: data.uid });
+      await this.openMatchChannel(matchId);
       this.pushLocalState();
       this.startLocalLoops();
-      this.listenForActions();
       return true;
     }
 
     // Nobody else was waiting: post myself and give someone else a brief window to claim me.
-    const myQueueRef = doc(collection(db, 'pvpQueue'));
-    this.queueDocId = myQueueRef.id;
-    await setDoc(myQueueRef, {
-      uid: params.myId, name: params.name, deck: params.deck, trophies: params.trophies,
-      cardLevels: params.cardLevels, status: 'waiting', createdAt: Date.now(),
-    });
+    const { data: inserted, error: insertError } = await supabase
+      .from('clash_pvp_queue')
+      .insert({ uid: params.myId, name: params.name, deck: params.deck, trophies: params.trophies, card_levels: params.cardLevels, status: 'waiting' })
+      .select().single();
+    if (insertError) throw insertError;
+    this.queueRowId = inserted.id;
 
     const matchedId = await new Promise<string | null>((resolve) => {
-      const timer = setTimeout(() => { unsub(); resolve(null); }, waitMs);
-      const unsub = onSnapshot(myQueueRef, (s) => {
-        const data = s.data();
-        if (data?.status === 'matched' && data.matchId) {
-          clearTimeout(timer);
-          unsub();
-          resolve(data.matchId);
-        }
-      });
+      let settled = false;
+      const timer = setTimeout(() => { if (!settled) { settled = true; resolve(null); } }, waitMs);
+      this.queueChannel = supabase
+        .channel(`queue-${inserted.id}`)
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'clash_pvp_queue', filter: `id=eq.${inserted.id}` }, (payload: any) => {
+          if (payload.new?.status === 'matched' && payload.new?.match_id && !settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(payload.new.match_id);
+          }
+        })
+        .subscribe();
     });
 
-    deleteDoc(myQueueRef).catch(() => {});
-    this.queueDocId = null;
+    if (this.queueChannel) { supabase.removeChannel(this.queueChannel); this.queueChannel = null; }
+    supabase.from('clash_pvp_queue').delete().eq('id', inserted.id).then(() => {});
+    this.queueRowId = null;
 
     if (matchedId) {
       this.isHost = false;
       this.myTeam = 'red'; // the waiting player is always seated 'red' (see host branch above)
-      this.matchDocId = matchedId;
-      this.listenToMatchDoc(matchedId);
+      await this.openMatchChannel(matchedId);
       return true;
     }
     return false;
   }
 
-  private listenToMatchDoc(matchId: string) {
-    const unsub = onSnapshot(doc(db, 'matches', matchId), (s) => {
-      if (!s.exists()) {
-        if (!this.ended && this.lastRemoteSnapshot) {
-          this.ended = true;
-          this.callbacks.onNotification('상대가 접속을 종료했습니다.', '#ef4444');
-          this.callbacks.onState({
-            ...this.lastRemoteSnapshot,
-            matchState: { ...this.lastRemoteSnapshot.matchState, status: 'GAMEOVER', winner: this.myTeam },
-          });
-          this.callbacks.onMatchResult(rewardForResult(this.myTeam, this.myTeam));
-        }
-        return;
-      }
-      const data = s.data();
-      if (!data?.state) return;
-      this.lastRemoteSnapshot = data.state;
-      this.callbacks.onState(data.state);
-      if (data.state.matchState?.status === 'GAMEOVER' && !this.ended) {
+  /** Subscribes to the match's broadcast channel and starts presence tracking. */
+  private async openMatchChannel(matchId: string) {
+    const channel = supabase.channel(`match-${matchId}`, { config: { broadcast: { self: false }, presence: { key: this.myId } } });
+
+    channel.on('broadcast', { event: 'state' }, ({ payload }: any) => {
+      if (this.isHost) return; // host is authoritative; it doesn't apply its own echoed state
+      this.lastRemoteSnapshot = payload;
+      this.callbacks.onState(payload);
+      if (payload.matchState?.status === 'GAMEOVER' && !this.ended) {
         this.ended = true;
-        this.callbacks.onMatchResult(rewardForResult(data.state.matchState.winner, this.myTeam));
+        this.callbacks.onMatchResult(rewardForResult(payload.matchState.winner, this.myTeam));
       }
     });
-    this.unsubs.push(unsub);
-  }
 
-  private listenForActions() {
-    if (!this.matchDocId) return;
-    const q = query(collection(db, 'matches', this.matchDocId, 'actions'), where('consumed', '==', false));
-    const unsub = onSnapshot(q, (snap) => {
-      snap.docChanges().forEach((change) => {
-        if (change.type !== 'added' || !this.match) return;
-        const data = change.doc.data();
-        const p = this.match.players[data.by];
-        const card = CARDS[data.cardId];
-        if (p && card && p.mana >= card.cost) {
-          p.mana -= card.cost;
-          playCardLogic(this.match, p, card, data.x, data.y, this.events);
+    channel.on('broadcast', { event: 'action' }, ({ payload }: any) => {
+      if (!this.isHost || !this.match) return;
+      const p = this.match.players[payload.by];
+      const card = CARDS[payload.cardId];
+      if (p && card && p.mana >= card.cost) {
+        p.mana -= card.cost;
+        playCardLogic(this.match, p, card, payload.x, payload.y, this.events);
+      }
+    });
+
+    channel.on('presence', { event: 'leave' }, ({ key }: any) => {
+      if (key !== this.myId && !this.ended) {
+        this.ended = true;
+        this.stopLoops();
+        this.callbacks.onNotification('상대가 접속을 종료했습니다.', '#ef4444');
+        const base = this.lastRemoteSnapshot ?? (this.match ? serialize(this.match) : null);
+        if (base) {
+          this.callbacks.onState({ ...base, matchState: { ...base.matchState, status: 'GAMEOVER', winner: this.myTeam } });
         }
-        updateDoc(change.doc.ref, { consumed: true }).catch(() => {});
+        this.callbacks.onMatchResult(rewardForResult(this.myTeam, this.myTeam));
+      }
+    });
+
+    await new Promise<void>((resolve) => {
+      channel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({ uid: this.myId });
+          resolve();
+        }
       });
     });
-    this.unsubs.push(unsub);
+    this.matchChannel = channel;
   }
 
   /** The local player plays a card. Host applies it immediately; a guest relays it to the host. */
@@ -282,25 +283,27 @@ export class MatchController {
         p.mana -= card.cost;
         playCardLogic(this.match, p, card, x, y, this.events);
         this.pushLocalState();
-        if (this.matchDocId) this.syncToFirestore();
+        if (this.matchChannel) this.syncToPeer();
       }
-    } else if (this.matchDocId) {
-      addDoc(collection(db, 'matches', this.matchDocId, 'actions'), {
-        cardId, x, y, by: this.myId, consumed: false, createdAt: Date.now(),
-      }).catch(() => {});
+    } else if (this.matchChannel) {
+      this.matchChannel.send({ type: 'broadcast', event: 'action', payload: { cardId, x, y, by: this.myId } });
     }
   }
 
   leave() {
     this.stopLoops();
-    this.unsubs.forEach(u => u());
-    this.unsubs = [];
-    if (this.queueDocId) deleteDoc(doc(db, 'pvpQueue', this.queueDocId)).catch(() => {});
-    if (this.isHost && this.matchDocId) deleteDoc(doc(db, 'matches', this.matchDocId)).catch(() => {});
+    if (this.queueChannel) { supabase.removeChannel(this.queueChannel); this.queueChannel = null; }
+    if (this.matchChannel) {
+      // untrack()+unsubscribe() first so the opponent's presence 'leave' handler fires
+      // promptly; removeChannel() alone can take a while for the server to notice.
+      const ch = this.matchChannel;
+      this.matchChannel = null;
+      ch.untrack().finally(() => ch.unsubscribe().finally(() => supabase.removeChannel(ch)));
+    }
+    if (this.queueRowId) { supabase.from('clash_pvp_queue').delete().eq('id', this.queueRowId).then(() => {}); this.queueRowId = null; }
     this.match = null;
-    this.matchDocId = null;
-    this.queueDocId = null;
     this.lastRemoteSnapshot = null;
     this.ended = false;
+    this.opponentId = null;
   }
 }
