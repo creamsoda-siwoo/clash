@@ -9,6 +9,8 @@ export interface Player {
   nextCard?: string;
   trophies: number;
   userId?: string;
+  cardLevels?: Record<string, number>;
+  lastCardTime?: number;
 }
 
 export interface Unit {

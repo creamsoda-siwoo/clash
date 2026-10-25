@@ -11,6 +11,30 @@ service cloud.firestore {
       allow create, update: if request.auth != null && request.auth.uid == userId;
     }
     
+    // PvP matchmaking queue: any signed-in user can see what's waiting and post
+    // themselves; only the queue entry's own owner can change/remove it (a host
+    // claims someone else's entry through the matches/* match, not this doc).
+    match /pvpQueue/{entryId} {
+      allow read, list: if request.auth != null;
+      allow create: if request.auth != null && request.auth.uid == request.resource.data.uid;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null && request.auth.uid == resource.data.uid;
+    }
+
+    // Live PvP match state, relayed browser-to-browser instead of through a server.
+    match /matches/{matchId} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null &&
+        (request.auth.uid == request.resource.data.hostId || request.auth.uid == resource.data.hostId);
+      allow delete: if request.auth != null && request.auth.uid == resource.data.hostId;
+
+      match /actions/{actionId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null && request.auth.uid == request.resource.data.by;
+        allow update: if request.auth != null;
+      }
+    }
+
     // Default deny for everything else
     match /{document=**} {
       allow read, write: if false;

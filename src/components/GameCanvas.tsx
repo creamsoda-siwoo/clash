@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { io, Socket } from 'socket.io-client';
 import { Trophy, Shield, Swords, Target, Zap, Plus, Crosshair, Snowflake, Flame, Skull, Home, Droplets, Heart, Cpu, Loader2, Smile, Users, Coins, LogOut, Book, Award, Info, HelpCircle, ShoppingCart, Dices, BookOpen, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth, db } from '../lib/firebase';
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot, collection, query, orderBy, limit, getDocs, where } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, orderBy, limit, getDocs } from 'firebase/firestore';
 import { CARDS, CardDef, TIERS, getTier } from '../constants';
+import { MatchController, MatchSnapshot } from '../lib/matchRuntime';
 
 // Modular Components
 import { BattleTab } from './lobby/BattleTab';
@@ -26,7 +26,7 @@ import { Player, Unit, MatchState, Emote, FloatingText, Mission, PachinkoResult,
 
 export default function GameCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [socket, setSocket] = useState<Socket | null>(null);
+  const matchControllerRef = useRef<MatchController | null>(null);
 
   // Auth State
   const [isAppReady, setIsAppReady] = useState(false);
@@ -40,7 +40,6 @@ export default function GameCanvas() {
   // Game Persistence State
   const [myId, setMyId] = useState('');
   const [playerName, setPlayerName] = useState('사령관');
-  const [socketId, setSocketId] = useState<string | null>(null);
   const [gold, setGold] = useState(1000);
   const [trophies, setTrophies] = useState(0);
   const [unlockedCards, setUnlockedCards] = useState<string[]>(['knight', 'archer', 'giant', 'fireball', 'arrows', 'skeletons']);
@@ -150,83 +149,30 @@ export default function GameCanvas() {
     return () => unsub();
   }, []);
 
-  useEffect(() => {
-    if (!isLoggedIn || !myId) return;
+  // Applies a match snapshot (from the local engine or a Firestore relay) to UI state.
+  const applyMatchSnapshot = (data: MatchSnapshot) => {
+    setPlayers(data.players || {});
+    setUnits(data.units || []);
+    setProjectiles(data.projectiles || []);
+    setMatchState(data.matchState || { status: 'LOBBY', winner: '', timeLeft: 180 });
+    setEffects(data.effects || []);
+    setBases(data.bases || []);
+    setTowers(data.towers || []);
 
-    // Socket initialization
-    // NEXT_PUBLIC_SOCKET_URL lets the frontend (e.g. deployed on Vercel) point at a
-    // separately hosted always-on game server; falls back to same-origin (e.g. Render).
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL ||
-      (window.location.protocol + '//' + window.location.hostname + (window.location.port ? ':' + window.location.port : ''));
-    const newSocket = io(socketUrl, {
-      transports: ['websocket'],
-      upgrade: false
-    });
-
-    setSocket(newSocket);
-
-    newSocket.on('connect', () => {
-      console.log('Connected to server, ID:', newSocket.id);
-      setSocketId(newSocket.id || null);
-      newSocket.emit('syncSocial', { trophies });
-    });
-
-    newSocket.on('gameState', (data) => {
-      setPlayers(data.players || {});
-      setUnits(data.units || []);
-      setProjectiles(data.projectiles || []);
-      setMatchState(data.matchState || { status: 'LOBBY', winner: '', timeLeft: 180 });
-      setEffects(data.effects || []);
-      setBases(data.bases || []);
-      setTowers(data.towers || []);
-
-      if (data.matchState?.status === 'PLAYING') {
-        if (showLobby) {
-          setNotification({ message: '배틀 시작!', color: '#3b82f6' });
-          setCameraX(450);
-          setCameraY(800);
-        }
-        setShowLobby(false);
-        setIsSearching(false);
+    if (data.matchState?.status === 'PLAYING') {
+      if (showLobby) {
+        setNotification({ message: '배틀 시작!', color: '#3b82f6' });
+        setCameraX(450);
+        setCameraY(800);
       }
-    });
+      setShowLobby(false);
+      setIsSearching(false);
+    }
+  };
 
-    newSocket.on('matchResult', (data: { result: 'win' | 'lose' | 'draw', trophyChange: number, goldChange: number }) => {
-      setMatchResultInfo(data);
-      setGold(prevGold => {
-        const newGold = prevGold + (data.goldChange || 0);
-        setTrophies(prevTrophy => {
-          const newTrophies = Math.max(0, prevTrophy + (data.trophyChange || 0));
-          saveToServer({ gold: newGold, trophies: newTrophies });
-          return newTrophies;
-        });
-        return newGold;
-      });
-    });
-
-    newSocket.on('socialUpdate', (data) => {
-      setOnlineUsers(data.onlineUsers || []);
-      setOnlineCount(data.onlineCount || 0);
-    });
-
-    newSocket.on('notification', (data) => {
-      setNotification(data);
-    });
-
-    newSocket.on('damageText', (data) => {
-      setFloatingTexts(prev => [...prev, { ...data, id: Math.random().toString(), life: 1.0 }]);
-    });
-
-    newSocket.on('emote', (emote) => {
-      setEmotes(prev => [...prev, emote]);
-      setTimeout(() => setEmotes(prev => prev.filter(e => e.id !== emote.id)), 3000);
-    });
-
-    return () => {
-      newSocket.disconnect();
-    };
-  }, [isLoggedIn, myId]);
-
+  useEffect(() => {
+    return () => { matchControllerRef.current?.leave(); };
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'USERS') {
@@ -285,14 +231,34 @@ export default function GameCanvas() {
         setNotification({ message: '전투 덱을 6장 채워주세요!', color: '#ef4444' });
         return;
     }
-    setIsSearching(true); 
-    
-    socket?.emit('joinQueue', { 
-        name: playerName,
-        deck: selectedDeck, 
-        trophies,
-        cardLevels,
-        userId: myId
+    setIsSearching(true);
+
+    matchControllerRef.current?.leave();
+    const controller = new MatchController({
+      onState: applyMatchSnapshot,
+      onDamageText: (x, y, amount, color) => {
+        setFloatingTexts(prev => [...prev, { id: Math.random().toString(), x, y, amount, color, life: 1.0 }]);
+      },
+      onNotification: (message, color) => setNotification({ message, color }),
+      onMatchResult: (data) => {
+        setMatchResultInfo(data);
+        setGold(prevGold => {
+          const newGold = prevGold + (data.goldChange || 0);
+          setTrophies(prevTrophy => {
+            const newTrophies = Math.max(0, prevTrophy + (data.trophyChange || 0));
+            saveToServer({ gold: newGold, trophies: newTrophies });
+            return newTrophies;
+          });
+          return newGold;
+        });
+      },
+    });
+    matchControllerRef.current = controller;
+
+    controller.joinQueue({ myId, name: playerName, deck: selectedDeck, trophies, cardLevels }).catch((err) => {
+      console.error('joinQueue failed', err);
+      setIsSearching(false);
+      setNotification({ message: '매칭에 실패했습니다. 다시 시도해주세요.', color: '#ef4444' });
     });
   };
 
@@ -302,23 +268,23 @@ export default function GameCanvas() {
     const dy = Math.abs(e.clientY - lastMouseY.current);
     if (dx > 5 || dy > 5) return;
 
-    if (matchState.status !== 'PLAYING' || !selectedCardId || !socket) return;
+    if (matchState.status !== 'PLAYING' || !selectedCardId || !matchControllerRef.current) return;
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    
+
     let x = (e.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
     let y = (e.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
 
-    const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+    const myTeam = (players[myId] as any)?.team || 'blue';
     if (myTeam === 'red') {
         x = 900 - x;
         y = 1600 - y;
     }
-    
+
     // Add local placement effect for immediate feedback
     placementEffects.current.push({ x, y, life: 1.0 });
 
-    socket.emit('playCard', { cardId: selectedCardId, x, y });
+    matchControllerRef.current.playCard(selectedCardId, x, y);
     setSelectedCardId(null);
   };
 
@@ -333,8 +299,8 @@ export default function GameCanvas() {
     if (rect) {
       let x = (e.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
       let y = (e.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
-      
-      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+
+      const myTeam = (players[myId] as any)?.team || 'blue';
       if (myTeam === 'red') {
           x = 900 - x;
           y = 1600 - y;
@@ -369,8 +335,8 @@ export default function GameCanvas() {
     if (rect) {
       let x = (touch.clientX - rect.left - window.innerWidth/2) / viewScale + cameraX;
       let y = (touch.clientY - rect.top - window.innerHeight/2) / viewScale + cameraY;
-      
-      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+
+      const myTeam = (players[myId] as any)?.team || 'blue';
       if (myTeam === 'red') {
           x = 900 - x;
           y = 1600 - y;
@@ -473,7 +439,7 @@ export default function GameCanvas() {
       ctx.translate(canvas.width/2, canvas.height/2);
       ctx.scale(scale, scale);
       
-      const myTeam = (players[socketId || ''] as any)?.team || 'blue';
+      const myTeam = (players[myId] as any)?.team || 'blue';
       if (myTeam === 'red') {
           ctx.rotate(Math.PI);
       }
@@ -755,26 +721,27 @@ export default function GameCanvas() {
 
       {/* HUD & Modals */}
       {!showLobby && (
-          <HUD 
-            me={(players[socketId || ''] as Player) || (Object.values(players) as Player[]).find(p => p.userId === myId || p.id === socketId)} 
-            opponent={(Object.values(players) as Player[]).find(p => p.id !== (socketId || myId)) || null} 
-            cardsDef={CARDS} 
-            selectedCardId={selectedCardId} 
-            setSelectedCardId={setSelectedCardId} 
-            myId={myId} 
+          <HUD
+            me={players[myId] as Player}
+            opponent={(Object.values(players) as Player[]).find(p => p.id !== myId) || null}
+            cardsDef={CARDS}
+            selectedCardId={selectedCardId}
+            setSelectedCardId={setSelectedCardId}
+            myId={myId}
           />
       )}
 
       {!showLobby && (
-        <MatchResult 
-          matchState={matchState} 
-          myId={myId} 
-          myTeam={(players[socketId || ''] as Player)?.team || ''}
+        <MatchResult
+          matchState={matchState}
+          myId={myId}
+          myTeam={(players[myId] as Player)?.team || ''}
           onClose={() => {
             setShowLobby(true);
             setMatchState({ status: 'LOBBY', winner: '', timeLeft: 180 });
-            socket?.emit('leaveGame');
-          }} 
+            matchControllerRef.current?.leave();
+            matchControllerRef.current = null;
+          }}
         />
       )}
 
@@ -925,8 +892,8 @@ export default function GameCanvas() {
                           onlineUsers={onlineUsers} 
                           onlineCount={onlineCount} 
                           myId={myId} 
-                          playerName={playerName} 
-                          socket={socket} 
+                          playerName={playerName}
+                          socket={null}
                       />
                   )}
                   {activeTab === 'WIKI' && (
